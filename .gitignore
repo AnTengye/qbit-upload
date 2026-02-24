@@ -1,0 +1,26 @@
+﻿# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Logs and runtime files
+*.log
+logs/
+
+# Archives
+*.7z
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local config
+qbit-upload.yaml
+qbit-upload.yml
+qbit-upload.json
+AGENTS.md
