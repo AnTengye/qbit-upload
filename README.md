@@ -8,7 +8,7 @@
 - Ignore files smaller than a configurable minimum size.
 - Encrypt archive content and file list with 7z password mode (`-p` + `-mhe=on`).
 - Optional dry-run mode.
-- Rotating logs via `lumberjack`.
+- Per-run timestamped logs written to a log directory.
 
 ## Requirements
 

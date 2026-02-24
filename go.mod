@@ -4,7 +4,6 @@ go 1.23.11
 
 require (
 	github.com/spf13/cobra v1.10.2
-	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
 )
 

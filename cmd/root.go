@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"gopkg.in/natefinch/lumberjack.v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -174,10 +173,6 @@ type appConfig struct {
 
 type logConfig struct {
 	Path       string `json:"path" yaml:"path"`
-	MaxSizeMB  int    `json:"max_size_mb" yaml:"max_size_mb"`
-	MaxBackups int    `json:"max_backups" yaml:"max_backups"`
-	MaxAgeDays int    `json:"max_age_days" yaml:"max_age_days"`
-	Compress   bool   `json:"compress" yaml:"compress"`
 	AlsoStdout *bool  `json:"also_stdout" yaml:"also_stdout"`
 }
 
@@ -293,37 +288,25 @@ func initLogging(cfg appConfig) (string, error) {
 	}
 	execDir := filepath.Dir(execPath)
 
-	logPath := strings.TrimSpace(cfg.Log.Path)
-	if logPath == "" {
-		logPath = filepath.Join(execDir, "qbit-upload.log")
-	} else if !filepath.IsAbs(logPath) {
-		logPath = filepath.Join(execDir, logPath)
+	logDir := strings.TrimSpace(cfg.Log.Path)
+	if logDir == "" {
+		logDir = filepath.Join(execDir, "logs")
+	} else if !filepath.IsAbs(logDir) {
+		logDir = filepath.Join(execDir, logDir)
+	}
+	if ext := strings.ToLower(filepath.Ext(logDir)); ext == ".log" || ext == ".txt" {
+		logDir = filepath.Dir(logDir)
 	}
 
-	maxSizeMB := cfg.Log.MaxSizeMB
-	if maxSizeMB <= 0 {
-		maxSizeMB = 20
-	}
-	maxBackups := cfg.Log.MaxBackups
-	if maxBackups <= 0 {
-		maxBackups = 10
-	}
-	maxAgeDays := cfg.Log.MaxAgeDays
-	if maxAgeDays <= 0 {
-		maxAgeDays = 30
-	}
-
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return "", fmt.Errorf("创建日志目录失败: %w", err)
 	}
+	logFileName := fmt.Sprintf("qbit-upload-%s.log", time.Now().Format("20060102-150405"))
+	logPath := filepath.Join(logDir, logFileName)
 
-	fileWriter := &lumberjack.Logger{
-		Filename:   logPath,
-		MaxSize:    maxSizeMB,
-		MaxBackups: maxBackups,
-		MaxAge:     maxAgeDays,
-		Compress:   cfg.Log.Compress,
-		LocalTime:  true,
+	fileWriter, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return "", fmt.Errorf("创建日志文件失败: %w", err)
 	}
 
 	alsoStdout := true

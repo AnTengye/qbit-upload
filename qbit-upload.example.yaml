@@ -4,9 +4,5 @@ seven_zip: 7z
 min_size_mb: 50
 
 log:
-  path: logs/qbit-upload.log
-  max_size_mb: 20
-  max_backups: 10
-  max_age_days: 30
-  compress: false
+  path: logs
   also_stdout: true
