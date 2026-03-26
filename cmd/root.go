@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,12 +22,13 @@ import (
 const mb = 1024 * 1024
 
 var (
-	destDir   string
-	password  string
-	sevenZip  string
-	minSizeMB int64
-	dryRun    bool
-	config    string
+	destDir         string
+	password        string
+	sevenZip        string
+	minSizeMB       int64
+	reserveMemoryMB int64
+	dryRun          bool
+	config          string
 )
 
 var runtimeLogOutput io.Writer = os.Stdout
@@ -49,6 +51,7 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().StringVarP(&password, "password", "p", "", "7z 加密密码（可从配置文件读取）")
 	cmd.Flags().StringVar(&sevenZip, "7z", "7z", "7z 可执行文件路径")
 	cmd.Flags().Int64Var(&minSizeMB, "min-size-mb", 50, "最小视频大小（MB）")
+	cmd.Flags().Int64Var(&reserveMemoryMB, "reserve-memory-mb", 2048, "压缩时系统至少保留的可用物理内存(MB)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除")
 	cmd.Flags().StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
 
@@ -142,7 +145,7 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	}()
 
 	stepLog("开始调用 7z 压缩（将实时输出 7z 日志）")
-	if err := compressWith7z(absSource, tempArchive, videoFiles, opts.SevenZip, opts.Password); err != nil {
+	if err := compressWith7z(absSource, tempArchive, videoFiles, opts.SevenZip, opts.Password, opts.ReserveMemoryMB); err != nil {
 		return err
 	}
 	stepLog("7z 压缩完成")
@@ -164,11 +167,12 @@ func run(cmd *cobra.Command, sourceDir string) error {
 }
 
 type appConfig struct {
-	DestDir   string    `json:"dest_dir" yaml:"dest_dir"`
-	Password  string    `json:"password" yaml:"password"`
-	SevenZip  string    `json:"seven_zip" yaml:"seven_zip"`
-	MinSizeMB int64     `json:"min_size_mb" yaml:"min_size_mb"`
-	Log       logConfig `json:"log" yaml:"log"`
+	DestDir         string    `json:"dest_dir" yaml:"dest_dir"`
+	Password        string    `json:"password" yaml:"password"`
+	SevenZip        string    `json:"seven_zip" yaml:"seven_zip"`
+	MinSizeMB       int64     `json:"min_size_mb" yaml:"min_size_mb"`
+	ReserveMemoryMB int64     `json:"reserve_memory_mb" yaml:"reserve_memory_mb"`
+	Log             logConfig `json:"log" yaml:"log"`
 }
 
 type logConfig struct {
@@ -177,11 +181,12 @@ type logConfig struct {
 }
 
 type runOptions struct {
-	DestDir   string
-	Password  string
-	SevenZip  string
-	MinSizeMB int64
-	DryRun    bool
+	DestDir         string
+	Password        string
+	SevenZip        string
+	MinSizeMB       int64
+	ReserveMemoryMB int64
+	DryRun          bool
 }
 
 func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
@@ -218,6 +223,14 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		minMB = minSizeMB
 	}
 
+	reserveMB := cfg.ReserveMemoryMB
+	if reserveMB <= 0 {
+		reserveMB = 2048
+	}
+	if cmd.Flags().Changed("reserve-memory-mb") {
+		reserveMB = reserveMemoryMB
+	}
+
 	if !dryRun && strings.TrimSpace(pwd) == "" {
 		return runOptions{}, fmt.Errorf("密码不能为空：请通过 --password 或配置文件提供")
 	}
@@ -226,11 +239,12 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	}
 
 	return runOptions{
-		DestDir:   dest,
-		Password:  pwd,
-		SevenZip:  seven,
-		MinSizeMB: minMB,
-		DryRun:    dryRun,
+		DestDir:         dest,
+		Password:        pwd,
+		SevenZip:        seven,
+		MinSizeMB:       minMB,
+		ReserveMemoryMB: reserveMB,
+		DryRun:          dryRun,
 	}, nil
 }
 
@@ -389,11 +403,47 @@ func isVideo(path string) (bool, error) {
 	return strings.HasPrefix(contentType, "video/"), nil
 }
 
-func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, archivePassword string) error {
+func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, archivePassword string, reserveMemoryMB int64) error {
+	cores := runtime.NumCPU()
+	threads := cores - 2 // Leave 2 cores idle
+	if threads < 1 {
+		threads = 1
+	}
+
+	dictSize := 64 // default 64m logic for mx=9
+	availMB := getAvailableMemoryMB()
+	if availMB > 0 {
+		var memLimitMB int
+		if availMB > uint64(reserveMemoryMB) {
+			memLimitMB = int(availMB - uint64(reserveMemoryMB))
+		} else {
+			memLimitMB = 0
+		}
+		// 7z -mx=9 with dict 64m requires ~700MB RAM per thread
+		memSafeThreads := memLimitMB / 700
+
+		if memSafeThreads < 1 {
+			// Memory is severely limited (<700MB free), force 1 thread and reduce dict size
+			threads = 1
+			dictSize = memLimitMB / 11
+			if dictSize < 1 {
+				dictSize = 1
+			}
+			if dictSize > 64 {
+				dictSize = 64
+			}
+		} else if threads > memSafeThreads {
+			// Throttle max threads down to memSafeThreads to avoid Out Of Memory
+			threads = memSafeThreads
+		}
+	}
+
 	args := []string{
 		"a",
 		"-t7z",
 		"-mx=9",
+		fmt.Sprintf("-md=%dm", dictSize),
+		fmt.Sprintf("-mmt=%d", threads),
 		"-mhe=on",
 		"-p" + archivePassword,
 		outArchive,
