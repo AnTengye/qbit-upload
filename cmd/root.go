@@ -403,39 +403,74 @@ func isVideo(path string) (bool, error) {
 	return strings.HasPrefix(contentType, "video/"), nil
 }
 
-func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, archivePassword string, reserveMemoryMB int64) error {
-	cores := runtime.NumCPU()
-	threads := cores - 2 // Leave 2 cores idle
-	if threads < 1 {
-		threads = 1
+// dictSizeLevels holds candidate LZMA2 dictionary sizes (MB) in descending order.
+// Values are powers of two as recommended by 7-Zip documentation.
+var dictSizeLevels = []int{256, 128, 64, 32, 16, 8, 4, 2, 1}
+
+// memCoeffPerThread is the empirical multiplier for LZMA2 compressor memory usage.
+// Each thread needs approximately dictSizeMB * memCoeffPerThread MB of RAM.
+const memCoeffPerThread = 11.5
+
+// calcSevenZipParams returns the best (dictSizeMB, threads) combination that fits
+// within the available memory budget.
+//
+//   - availMB: free physical RAM reported by the OS (0 = unknown, skip budgeting)
+//   - reserveMB: MB to keep reserved for the OS and other processes
+//   - cpuCores: logical CPU count
+//
+// The algorithm picks the largest dict size from dictSizeLevels such that
+//
+//	dictSizeMB * memCoeffPerThread * threads <= budgetMB
+//
+// If no combination fits even with threads=1, it falls back to dictSizeMB=1, threads=1.
+func calcSevenZipParams(availMB uint64, reserveMB int64, cpuCores int) (dictSizeMB, threads int) {
+	// Default thread count: leave 2 cores free for the OS.
+	maxThreads := cpuCores - 2
+	if maxThreads < 1 {
+		maxThreads = 1
 	}
 
-	dictSize := 64 // default 64m logic for mx=9
-	availMB := getAvailableMemoryMB()
-	if availMB > 0 {
-		var memLimitMB int
-		if availMB > uint64(reserveMemoryMB) {
-			memLimitMB = int(availMB - uint64(reserveMemoryMB))
-		} else {
-			memLimitMB = 0
-		}
-		// 7z -mx=9 with dict 64m requires ~700MB RAM per thread
-		memSafeThreads := memLimitMB / 700
+	// If we cannot determine available memory, use CPU-only defaults.
+	if availMB == 0 {
+		return 64, maxThreads
+	}
 
-		if memSafeThreads < 1 {
-			// Memory is severely limited (<700MB free), force 1 thread and reduce dict size
-			threads = 1
-			dictSize = memLimitMB / 11
-			if dictSize < 1 {
-				dictSize = 1
+	var budgetMB int
+	if availMB > uint64(reserveMB) {
+		budgetMB = int(availMB - uint64(reserveMB))
+	}
+	// budgetMB == 0 means we are already below the reserve; still attempt minimal compression.
+
+	// Try each dict size from largest to smallest.
+	for _, dict := range dictSizeLevels {
+		// Start with the preferred thread count and reduce if needed.
+		for t := maxThreads; t >= 1; t-- {
+			required := float64(dict) * memCoeffPerThread * float64(t)
+			if required <= float64(budgetMB) {
+				return dict, t
 			}
-			if dictSize > 64 {
-				dictSize = 64
-			}
-		} else if threads > memSafeThreads {
-			// Throttle max threads down to memSafeThreads to avoid Out Of Memory
-			threads = memSafeThreads
 		}
+	}
+
+	// Absolute fallback: minimum possible resource usage.
+	return 1, 1
+}
+
+func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, archivePassword string, reserveMemoryMB int64) error {
+	availMB := getAvailableMemoryMB()
+	dictSize, threads := calcSevenZipParams(availMB, reserveMemoryMB, runtime.NumCPU())
+
+	if availMB > 0 {
+		var budgetMB int64
+		if availMB > uint64(reserveMemoryMB) {
+			budgetMB = int64(availMB) - reserveMemoryMB
+		}
+		stepLog("内存决策: 可用 %d MiB，保留 %d MiB，预算 %d MiB → dict=%dm threads=%d（预计用量 %.0f MiB）",
+			availMB, reserveMemoryMB, budgetMB,
+			dictSize, threads,
+			float64(dictSize)*memCoeffPerThread*float64(threads))
+	} else {
+		stepLog("内存决策: 无法获取系统内存，使用默认参数 → dict=%dm threads=%d", dictSize, threads)
 	}
 
 	args := []string{
