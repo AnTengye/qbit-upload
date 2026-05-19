@@ -1,0 +1,110 @@
+package cmd
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"sort"
+	"testing"
+)
+
+func TestCreateTgzIncludesOnlyRequestedFiles(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "a.mp4"), "aaa")
+	mustWriteFile(t, filepath.Join(root, "nested", "b.mkv"), "bbb")
+	mustWriteFile(t, filepath.Join(root, "skip.txt"), "skip")
+
+	out := filepath.Join(t.TempDir(), "out.tgz")
+	if err := createTgzArchive(root, out, []string{"a.mp4", filepath.Join("nested", "b.mkv")}); err != nil {
+		t.Fatalf("createTgzArchive returned error: %v", err)
+	}
+
+	got := readTgzNames(t, out)
+	want := []string{"a.mp4", "nested/b.mkv"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tgz entries = %#v, want %#v", got, want)
+	}
+}
+
+func TestDiscoverSevenZipPrefersEmbeddedCandidate(t *testing.T) {
+	execDir := t.TempDir()
+	embedded := filepath.Join(execDir, "tools", runtime.GOOS+"-"+runtime.GOARCH, executableName("7z"))
+	mustWriteExecutable(t, embedded)
+
+	got, err := discoverSevenZip("", execDir, "tools", func(name string) (string, error) {
+		return filepath.Join(t.TempDir(), name), nil
+	})
+	if err != nil {
+		t.Fatalf("discoverSevenZip returned error: %v", err)
+	}
+	if got != embedded {
+		t.Fatalf("discoverSevenZip = %q, want %q", got, embedded)
+	}
+}
+
+func TestDiscoverSevenZipUsesExplicitPath(t *testing.T) {
+	explicit := filepath.Join(t.TempDir(), executableName("7z"))
+	mustWriteExecutable(t, explicit)
+
+	got, err := discoverSevenZip(explicit, t.TempDir(), "tools", nil)
+	if err != nil {
+		t.Fatalf("discoverSevenZip returned error: %v", err)
+	}
+	if got != explicit {
+		t.Fatalf("discoverSevenZip = %q, want explicit path", got)
+	}
+}
+
+func mustWriteFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+func mustWriteExecutable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s): %v", path, err)
+	}
+}
+
+func readTgzNames(t *testing.T, path string) []string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open(%s): %v", path, err)
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatalf("NewReader(%s): %v", path, err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	var names []string
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar Next: %v", err)
+		}
+		names = append(names, hdr.Name)
+	}
+	sort.Strings(names)
+	return names
+}

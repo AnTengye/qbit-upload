@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,9 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -22,13 +19,15 @@ import (
 const mb = 1024 * 1024
 
 var (
-	destDir         string
-	password        string
-	sevenZip        string
-	minSizeMB       int64
-	reserveMemoryMB int64
-	dryRun          bool
-	config          string
+	destDir          string
+	password         string
+	sevenZip         string
+	minSizeMB        int64
+	reserveMemoryMB  int64
+	allowTgzFallback bool
+	embedded7zDir    string
+	dryRun           bool
+	config           string
 )
 
 var runtimeLogOutput io.Writer = os.Stdout
@@ -52,6 +51,8 @@ func newRootCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sevenZip, "7z", "7z", "7z 可执行文件路径")
 	cmd.Flags().Int64Var(&minSizeMB, "min-size-mb", 50, "最小视频大小（MB）")
 	cmd.Flags().Int64Var(&reserveMemoryMB, "reserve-memory-mb", 2048, "压缩时系统至少保留的可用物理内存(MB)")
+	cmd.Flags().BoolVar(&allowTgzFallback, "allow-tgz-fallback", true, "7z 不可用或失败时生成未加密 .tgz")
+	cmd.Flags().StringVar(&embedded7zDir, "embedded-7z-dir", "tools", "内嵌 7z 工具目录（相对程序目录）")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除")
 	cmd.Flags().StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
 
@@ -114,13 +115,26 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	}
 	stepLog("扫描完成，命中视频文件: %d 个", len(videoFiles))
 
-	archiveName := filepath.Base(absSource) + ".7z"
-	finalArchive := filepath.Join(absDest, archiveName)
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("获取程序路径失败: %w", err)
+	}
+	execDir := filepath.Dir(execPath)
+	stepLog("发现 7z 可执行文件")
+	sevenZipPath, sevenZipErr := discoverSevenZip(opts.SevenZip, execDir, opts.Archive.Embedded7zDir, nil)
+	plannedFormat := archiveFormat7z
+	if sevenZipErr != nil {
+		if !opts.Archive.AllowTgzFallback {
+			return sevenZipErr
+		}
+		plannedFormat = archiveFormatTgz
+		stepLog("INFO: 7z 不可用，将使用未加密 tgz 兜底: %v", sevenZipErr)
+	}
+
+	finalArchive := filepath.Join(absDest, archiveFileName(filepath.Base(absSource), plannedFormat))
 	stepLog("检查目标压缩包是否冲突: %s", finalArchive)
-	if _, err := os.Stat(finalArchive); err == nil {
-		return fmt.Errorf("目标目录已存在同名压缩包: %s", finalArchive)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("检查目标压缩包失败: %w", err)
+	if err := ensureOutputDoesNotExist(finalArchive); err != nil {
+		return err
 	}
 
 	if opts.DryRun {
@@ -130,12 +144,17 @@ func run(cmd *cobra.Command, sourceDir string) error {
 			fmt.Printf("[dry-run]   - %s\n", f)
 		}
 		fmt.Printf("[dry-run] 目标压缩包: %s\n", finalArchive)
+		if plannedFormat == archiveFormat7z {
+			fmt.Printf("[dry-run] 压缩格式: 7z (%s)\n", sevenZipPath)
+		} else {
+			fmt.Printf("[dry-run] 压缩格式: tgz（未加密兜底）\n")
+		}
 		fmt.Printf("[dry-run] 将删除目录: %s\n", absSource)
 		stepLog("dry-run 完成")
 		return nil
 	}
 
-	tempArchive := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.7z", filepath.Base(absSource), time.Now().UnixNano()))
+	tempArchive := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.%s", filepath.Base(absSource), time.Now().UnixNano(), plannedFormat))
 	stepLog("临时压缩包路径: %s", tempArchive)
 	moved := false
 	defer func() {
@@ -144,11 +163,34 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		}
 	}()
 
-	stepLog("开始调用 7z 压缩（将实时输出 7z 日志）")
-	if err := compressWith7z(absSource, tempArchive, videoFiles, opts.SevenZip, opts.Password, opts.ReserveMemoryMB); err != nil {
-		return err
+	if plannedFormat == archiveFormat7z {
+		if strings.TrimSpace(opts.Password) == "" {
+			return fmt.Errorf("密码不能为空：使用 7z 时请通过 --password 或配置文件提供")
+		}
+		stepLog("开始调用 7z 压缩（将实时输出 7z 日志）")
+		if err := compressWith7z(absSource, tempArchive, videoFiles, sevenZipPath, opts.Password, opts.ReserveMemoryMB); err != nil {
+			if !opts.Archive.AllowTgzFallback {
+				return err
+			}
+			stepLog("INFO: 7z 压缩失败，将使用未加密 tgz 兜底: %v", err)
+			_ = os.Remove(tempArchive)
+			plannedFormat = archiveFormatTgz
+			tempArchive = filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.tgz", filepath.Base(absSource), time.Now().UnixNano()))
+			finalArchive = filepath.Join(absDest, archiveFileName(filepath.Base(absSource), plannedFormat))
+			if err := ensureOutputDoesNotExist(finalArchive); err != nil {
+				return err
+			}
+			if err := createTgzArchive(absSource, tempArchive, videoFiles); err != nil {
+				return err
+			}
+		}
+	} else {
+		stepLog("开始创建未加密 tgz 兜底压缩包")
+		if err := createTgzArchive(absSource, tempArchive, videoFiles); err != nil {
+			return err
+		}
 	}
-	stepLog("7z 压缩完成")
+	stepLog("压缩完成: %s", plannedFormat)
 
 	stepLog("移动压缩包到目标目录")
 	if err := moveFile(tempArchive, finalArchive); err != nil {
@@ -167,12 +209,18 @@ func run(cmd *cobra.Command, sourceDir string) error {
 }
 
 type appConfig struct {
-	DestDir         string    `json:"dest_dir" yaml:"dest_dir"`
-	Password        string    `json:"password" yaml:"password"`
-	SevenZip        string    `json:"seven_zip" yaml:"seven_zip"`
-	MinSizeMB       int64     `json:"min_size_mb" yaml:"min_size_mb"`
-	ReserveMemoryMB int64     `json:"reserve_memory_mb" yaml:"reserve_memory_mb"`
-	Log             logConfig `json:"log" yaml:"log"`
+	DestDir         string        `json:"dest_dir" yaml:"dest_dir"`
+	Password        string        `json:"password" yaml:"password"`
+	SevenZip        string        `json:"seven_zip" yaml:"seven_zip"`
+	MinSizeMB       int64         `json:"min_size_mb" yaml:"min_size_mb"`
+	ReserveMemoryMB int64         `json:"reserve_memory_mb" yaml:"reserve_memory_mb"`
+	Archive         archiveConfig `json:"archive" yaml:"archive"`
+	Log             logConfig     `json:"log" yaml:"log"`
+}
+
+type archiveConfig struct {
+	AllowTgzFallback *bool  `json:"allow_tgz_fallback" yaml:"allow_tgz_fallback"`
+	Embedded7zDir    string `json:"embedded_7z_dir" yaml:"embedded_7z_dir"`
 }
 
 type logConfig struct {
@@ -186,7 +234,13 @@ type runOptions struct {
 	SevenZip        string
 	MinSizeMB       int64
 	ReserveMemoryMB int64
+	Archive         archiveOptions
 	DryRun          bool
+}
+
+type archiveOptions struct {
+	AllowTgzFallback bool
+	Embedded7zDir    string
 }
 
 func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
@@ -208,9 +262,6 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	}
 
 	seven := cfg.SevenZip
-	if seven == "" {
-		seven = "7z"
-	}
 	if cmd.Flags().Changed("7z") {
 		seven = sevenZip
 	}
@@ -231,11 +282,25 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		reserveMB = reserveMemoryMB
 	}
 
-	if !dryRun && strings.TrimSpace(pwd) == "" {
-		return runOptions{}, fmt.Errorf("密码不能为空：请通过 --password 或配置文件提供")
-	}
 	if minMB <= 0 {
 		return runOptions{}, fmt.Errorf("min-size-mb 必须大于 0")
+	}
+
+	archive := archiveOptions{
+		AllowTgzFallback: true,
+		Embedded7zDir:    "tools",
+	}
+	if cfg.Archive.AllowTgzFallback != nil {
+		archive.AllowTgzFallback = *cfg.Archive.AllowTgzFallback
+	}
+	if strings.TrimSpace(cfg.Archive.Embedded7zDir) != "" {
+		archive.Embedded7zDir = cfg.Archive.Embedded7zDir
+	}
+	if cmd.Flags().Changed("allow-tgz-fallback") {
+		archive.AllowTgzFallback = allowTgzFallback
+	}
+	if cmd.Flags().Changed("embedded-7z-dir") {
+		archive.Embedded7zDir = embedded7zDir
 	}
 
 	return runOptions{
@@ -244,6 +309,7 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		SevenZip:        seven,
 		MinSizeMB:       minMB,
 		ReserveMemoryMB: reserveMB,
+		Archive:         archive,
 		DryRun:          dryRun,
 	}, nil
 }
@@ -456,52 +522,17 @@ func calcSevenZipParams(availMB uint64, reserveMB int64, cpuCores int) (dictSize
 	return 1, 1
 }
 
-func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, archivePassword string, reserveMemoryMB int64) error {
-	availMB := getAvailableMemoryMB()
-	dictSize, threads := calcSevenZipParams(availMB, reserveMemoryMB, runtime.NumCPU())
-
-	if availMB > 0 {
-		var budgetMB int64
-		if availMB > uint64(reserveMemoryMB) {
-			budgetMB = int64(availMB) - reserveMemoryMB
-		}
-		stepLog("内存决策: 可用 %d MiB，保留 %d MiB，预算 %d MiB → dict=%dm threads=%d（预计用量 %.0f MiB）",
-			availMB, reserveMemoryMB, budgetMB,
-			dictSize, threads,
-			float64(dictSize)*memCoeffPerThread*float64(threads))
-	} else {
-		stepLog("内存决策: 无法获取系统内存，使用默认参数 → dict=%dm threads=%d", dictSize, threads)
-	}
-
-	args := []string{
-		"a",
-		"-t7z",
-		"-mx=9",
-		fmt.Sprintf("-md=%dm", dictSize),
-		fmt.Sprintf("-mmt=%d", threads),
-		"-mhe=on",
-		"-p" + archivePassword,
-		outArchive,
-	}
-	args = append(args, files...)
-
-	cmd := exec.Command(sevenZipPath, args...)
-	cmd.Dir = sourceDir
-	var buf bytes.Buffer
-	mw := io.MultiWriter(runtimeLogOutput, &buf)
-	cmd.Stdout = mw
-	cmd.Stderr = mw
-
-	stepLog("执行命令: %s %s", sevenZipPath, strings.Join(args, " "))
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("7z 压缩失败: %w\n%s", err, strings.TrimSpace(buf.String()))
-	}
-	return nil
-}
-
 func stepLog(format string, args ...any) {
 	log.Printf("[step] "+format, args...)
+}
+
+func ensureOutputDoesNotExist(path string) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("目标目录已存在同名文件: %s", path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("检查目标文件失败: %w", err)
+	}
+	return nil
 }
 
 func moveFile(src, dst string) error {
