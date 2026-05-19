@@ -4,6 +4,18 @@ seven_zip: 7z
 min_size_mb: 50
 reserve_memory_mb: 2048
 
+archive:
+  allow_tgz_fallback: true
+  embedded_7z_dir: tools
+
+thumbnail:
+  enabled: true
+  ffmpeg: ffmpeg
+  ffprobe: ffprobe
+  columns: 4
+  rows: 15
+  width: 320
+
 log:
   path: logs
   also_stdout: true

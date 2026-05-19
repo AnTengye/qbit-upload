@@ -59,6 +59,22 @@ func TestDiscoverSevenZipUsesExplicitPath(t *testing.T) {
 	}
 }
 
+func TestDiscoverSevenZipLooksUpExplicitCommandName(t *testing.T) {
+	want := filepath.Join(t.TempDir(), executableName("7z"))
+	got, err := discoverSevenZip("7z", t.TempDir(), "tools", func(name string) (string, error) {
+		if name != "7z" {
+			t.Fatalf("lookPath called with %q, want 7z", name)
+		}
+		return want, nil
+	})
+	if err != nil {
+		t.Fatalf("discoverSevenZip returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("discoverSevenZip = %q, want %q", got, want)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -27,14 +27,21 @@ type archiveResult struct {
 }
 
 func discoverSevenZip(explicitPath, execDir, embeddedDir string, lookPath func(string) (string, error)) (string, error) {
+	if lookPath == nil {
+		lookPath = exec.LookPath
+	}
 	if strings.TrimSpace(explicitPath) != "" {
+		if !strings.ContainsAny(explicitPath, `/\`) {
+			found, err := lookPath(explicitPath)
+			if err != nil {
+				return "", fmt.Errorf("7z executable not found in PATH: %w", err)
+			}
+			return found, nil
+		}
 		if isExecutableFile(explicitPath) {
 			return explicitPath, nil
 		}
 		return "", fmt.Errorf("7z executable not found or not executable: %s", explicitPath)
-	}
-	if lookPath == nil {
-		lookPath = exec.LookPath
 	}
 	if strings.TrimSpace(embeddedDir) == "" {
 		embeddedDir = "tools"
