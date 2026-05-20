@@ -52,23 +52,37 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&destDir, "dest", "d", "", "压缩包输出目录（可选，默认程序所在目录）")
-	cmd.Flags().StringVarP(&password, "password", "p", "", "7z 加密密码（可从配置文件读取）")
-	cmd.Flags().StringVar(&sevenZip, "7z", "7z", "7z 可执行文件路径")
-	cmd.Flags().Int64Var(&minSizeMB, "min-size-mb", 50, "最小视频大小（MB）")
-	cmd.Flags().Int64Var(&reserveMemoryMB, "reserve-memory-mb", 2048, "压缩时系统至少保留的可用物理内存(MB)")
-	cmd.Flags().BoolVar(&allowTgzFallback, "allow-tgz-fallback", true, "7z 不可用或失败时生成未加密 .tgz")
-	cmd.Flags().StringVar(&embedded7zDir, "embedded-7z-dir", "tools", "内嵌 7z 工具目录（相对程序目录）")
-	cmd.Flags().BoolVar(&thumbnailEnabled, "thumbnail", true, "生成视频缩略图长图")
-	cmd.Flags().StringVar(&ffmpegPath, "ffmpeg", "ffmpeg", "ffmpeg 可执行文件路径")
-	cmd.Flags().StringVar(&ffprobePath, "ffprobe", "ffprobe", "ffprobe 可执行文件路径")
-	cmd.Flags().IntVar(&thumbnailColumns, "thumbnail-columns", 4, "缩略图列数")
-	cmd.Flags().IntVar(&thumbnailRows, "thumbnail-rows", 15, "缩略图行数")
-	cmd.Flags().IntVar(&thumbnailWidth, "thumbnail-width", 320, "单张缩略图宽度")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除")
-	cmd.Flags().StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
+	flags := cmd.PersistentFlags()
+	flags.StringVarP(&destDir, "dest", "d", "", "压缩包输出目录（可选，默认程序所在目录）")
+	flags.StringVarP(&password, "password", "p", "", "7z 加密密码（可从配置文件读取）")
+	flags.StringVar(&sevenZip, "7z", "7z", "7z 可执行文件路径")
+	flags.Int64Var(&minSizeMB, "min-size-mb", 50, "最小视频大小（MB）")
+	flags.Int64Var(&reserveMemoryMB, "reserve-memory-mb", 2048, "压缩时系统至少保留的可用物理内存(MB)")
+	flags.BoolVar(&allowTgzFallback, "allow-tgz-fallback", true, "7z 不可用或失败时生成未加密 .tgz")
+	flags.StringVar(&embedded7zDir, "embedded-7z-dir", "tools", "内嵌 7z 工具目录（相对程序目录）")
+	flags.BoolVar(&thumbnailEnabled, "thumbnail", true, "生成视频缩略图长图")
+	flags.StringVar(&ffmpegPath, "ffmpeg", "ffmpeg", "ffmpeg 可执行文件路径")
+	flags.StringVar(&ffprobePath, "ffprobe", "ffprobe", "ffprobe 可执行文件路径")
+	flags.IntVar(&thumbnailColumns, "thumbnail-columns", 4, "缩略图列数")
+	flags.IntVar(&thumbnailRows, "thumbnail-rows", 15, "缩略图行数")
+	flags.IntVar(&thumbnailWidth, "thumbnail-width", 320, "单张缩略图宽度")
+	flags.BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除")
+	flags.StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
+
+	cmd.AddCommand(newThumbnailCmd())
 
 	return cmd
+}
+
+func newThumbnailCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "thumbnail <source-dir>",
+		Short: "仅生成视频缩略图长图，不压缩或删除源目录",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runThumbnailOnly(cmd, args[0])
+		},
+	}
 }
 
 func run(cmd *cobra.Command, sourceDir string) error {
@@ -176,6 +190,13 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		return nil
 	}
 
+	if opts.Thumbnail.Enabled {
+		stepLog("开始生成视频缩略图")
+		if err := generateThumbnails(absSource, filepath.Base(absSource), absDest, videoFiles, opts.Thumbnail); err != nil {
+			return err
+		}
+	}
+
 	tempArchive := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.%s", filepath.Base(absSource), time.Now().UnixNano(), plannedFormat))
 	stepLog("临时压缩包路径: %s", tempArchive)
 	moved := false
@@ -220,13 +241,6 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	}
 	moved = true
 
-	if opts.Thumbnail.Enabled {
-		stepLog("开始生成视频缩略图")
-		if err := generateThumbnails(absSource, filepath.Base(absSource), absDest, videoFiles, opts.Thumbnail); err != nil {
-			return err
-		}
-	}
-
 	stepLog("删除源目录")
 	if err := os.RemoveAll(absSource); err != nil {
 		return fmt.Errorf("删除源目录失败: %w", err)
@@ -235,6 +249,99 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	stepLog("任务完成")
 	fmt.Printf("已完成: %d 个视频 -> %s\n", len(videoFiles), finalArchive)
 	return nil
+}
+
+func runThumbnailOnly(cmd *cobra.Command, sourceDir string) error {
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	logFilePath, err := initLogging(cfg)
+	if err != nil {
+		return err
+	}
+
+	stepLog("开始执行缩略图任务")
+	stepLog("日志文件: %s", logFilePath)
+
+	opts, err := resolveOptions(cmd, cfg)
+	if err != nil {
+		return err
+	}
+	if !isFlagChanged(cmd, "thumbnail") {
+		opts.Thumbnail.Enabled = true
+	}
+
+	absSource, absDest, videoFiles, err := prepareVideoInputs(sourceDir, opts)
+	if err != nil {
+		return err
+	}
+
+	if opts.DryRun {
+		fmt.Printf("[dry-run] 源目录: %s\n", absSource)
+		thumbs, err := planThumbnailOutputs(filepath.Base(absSource), absDest, videoFiles)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("[dry-run] 将生成缩略图数量: %d\n", len(thumbs))
+		for _, thumb := range thumbs {
+			fmt.Printf("[dry-run]   - %s\n", thumb.OutputPath)
+		}
+		stepLog("缩略图 dry-run 完成")
+		return nil
+	}
+
+	if !opts.Thumbnail.Enabled {
+		stepLog("缩略图已禁用，跳过")
+		return nil
+	}
+	if err := generateThumbnails(absSource, filepath.Base(absSource), absDest, videoFiles, opts.Thumbnail); err != nil {
+		return err
+	}
+
+	stepLog("缩略图任务完成")
+	fmt.Printf("缩略图已完成: %d 个视频 -> %s\n", len(videoFiles), absDest)
+	return nil
+}
+
+func prepareVideoInputs(sourceDir string, opts runOptions) (absSource, absDest string, videoFiles []string, err error) {
+	stepLog("解析源目录: %s", sourceDir)
+	absSource, err = filepath.Abs(sourceDir)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("解析源目录失败: %w", err)
+	}
+
+	stepLog("检查源目录是否存在")
+	info, err := os.Stat(absSource)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("读取源目录失败: %w", err)
+	}
+	if !info.IsDir() {
+		return "", "", nil, fmt.Errorf("不是目录: %s", absSource)
+	}
+
+	stepLog("解析目标目录: %s", opts.DestDir)
+	absDest, err = filepath.Abs(opts.DestDir)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("解析目标目录失败: %w", err)
+	}
+	stepLog("确保目标目录存在")
+	if err := os.MkdirAll(absDest, 0o755); err != nil {
+		return "", "", nil, fmt.Errorf("创建目标目录失败: %w", err)
+	}
+
+	stepLog("扫描视频文件（最小大小: %dMB）", opts.MinSizeMB)
+	minSizeBytes := opts.MinSizeMB * mb
+	videoFiles, err = collectEligibleVideos(absSource, minSizeBytes)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if len(videoFiles) == 0 {
+		return "", "", nil, fmt.Errorf("目录中没有大于等于 %dMB 的视频文件", opts.MinSizeMB)
+	}
+	stepLog("扫描完成，命中视频文件: %d 个", len(videoFiles))
+	return absSource, absDest, videoFiles, nil
 }
 
 type appConfig struct {
@@ -276,7 +383,7 @@ type archiveOptions struct {
 
 func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	dest := cfg.DestDir
-	if cmd.Flags().Changed("dest") {
+	if isFlagChanged(cmd, "dest") {
 		dest = destDir
 	}
 	if strings.TrimSpace(dest) == "" {
@@ -288,12 +395,12 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	}
 
 	pwd := cfg.Password
-	if cmd.Flags().Changed("password") {
+	if isFlagChanged(cmd, "password") {
 		pwd = password
 	}
 
 	seven := cfg.SevenZip
-	if cmd.Flags().Changed("7z") {
+	if isFlagChanged(cmd, "7z") {
 		seven = sevenZip
 	}
 
@@ -301,7 +408,7 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	if minMB <= 0 {
 		minMB = 50
 	}
-	if cmd.Flags().Changed("min-size-mb") {
+	if isFlagChanged(cmd, "min-size-mb") {
 		minMB = minSizeMB
 	}
 
@@ -309,7 +416,7 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	if reserveMB <= 0 {
 		reserveMB = 2048
 	}
-	if cmd.Flags().Changed("reserve-memory-mb") {
+	if isFlagChanged(cmd, "reserve-memory-mb") {
 		reserveMB = reserveMemoryMB
 	}
 
@@ -327,30 +434,30 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	if strings.TrimSpace(cfg.Archive.Embedded7zDir) != "" {
 		archive.Embedded7zDir = cfg.Archive.Embedded7zDir
 	}
-	if cmd.Flags().Changed("allow-tgz-fallback") {
+	if isFlagChanged(cmd, "allow-tgz-fallback") {
 		archive.AllowTgzFallback = allowTgzFallback
 	}
-	if cmd.Flags().Changed("embedded-7z-dir") {
+	if isFlagChanged(cmd, "embedded-7z-dir") {
 		archive.Embedded7zDir = embedded7zDir
 	}
 
 	thumbCfg := cfg.Thumbnail
-	if cmd.Flags().Changed("thumbnail") {
+	if isFlagChanged(cmd, "thumbnail") {
 		thumbCfg.Enabled = &thumbnailEnabled
 	}
-	if cmd.Flags().Changed("ffmpeg") {
+	if isFlagChanged(cmd, "ffmpeg") {
 		thumbCfg.FFmpeg = ffmpegPath
 	}
-	if cmd.Flags().Changed("ffprobe") {
+	if isFlagChanged(cmd, "ffprobe") {
 		thumbCfg.FFprobe = ffprobePath
 	}
-	if cmd.Flags().Changed("thumbnail-columns") {
+	if isFlagChanged(cmd, "thumbnail-columns") {
 		thumbCfg.Columns = thumbnailColumns
 	}
-	if cmd.Flags().Changed("thumbnail-rows") {
+	if isFlagChanged(cmd, "thumbnail-rows") {
 		thumbCfg.Rows = thumbnailRows
 	}
-	if cmd.Flags().Changed("thumbnail-width") {
+	if isFlagChanged(cmd, "thumbnail-width") {
 		thumbCfg.Width = thumbnailWidth
 	}
 	thumb, err := resolveThumbnailOptions(thumbCfg)
@@ -368,6 +475,11 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		Thumbnail:       thumb,
 		DryRun:          dryRun,
 	}, nil
+}
+
+func isFlagChanged(cmd *cobra.Command, name string) bool {
+	flag := cmd.Flag(name)
+	return flag != nil && flag.Changed
 }
 
 func loadConfig() (appConfig, error) {

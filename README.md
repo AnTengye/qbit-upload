@@ -31,6 +31,12 @@ Use explicit config:
 go run . --config qbit-upload.example.yaml <source-dir>
 ```
 
+Generate thumbnails only, without archiving or deleting the source directory:
+
+```powershell
+go run . thumbnail --config qbit-upload.example.yaml <source-dir>
+```
+
 Build binary:
 
 ```powershell
@@ -72,6 +78,8 @@ If 7z is unavailable or compression fails and `archive.allow_tgz_fallback` is `t
 
 Thumbnails are enabled by default. For each matched video, the CLI writes a JPEG contact sheet next to the archive in the destination directory. The default layout is `4` columns by `15` rows, and the image label includes file name, file size, and duration.
 
+In the normal archive flow, thumbnails are generated before compression starts. This makes missing `ffmpeg` / `ffprobe` fail early, before spending time creating an archive.
+
 Disable thumbnails with:
 
 ```powershell
@@ -83,6 +91,14 @@ Or in config:
 ```yaml
 thumbnail:
   enabled: false
+```
+
+If you see an error like `exec: "ffprobe": executable file not found in %PATH%`, install ffmpeg and add its `bin` directory to `PATH`, or configure absolute paths:
+
+```yaml
+thumbnail:
+  ffmpeg: D:/tools/ffmpeg/bin/ffmpeg.exe
+  ffprobe: D:/tools/ffmpeg/bin/ffprobe.exe
 ```
 
 ## Batch Script
