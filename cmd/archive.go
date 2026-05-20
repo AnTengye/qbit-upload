@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 type archiveFormat string
@@ -173,6 +174,32 @@ func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, 
 		stepLog("内存决策: 无法获取系统内存，使用默认参数 → dict=%dm threads=%d", dictSize, threads)
 	}
 
+	args := buildSevenZipArgs(outArchive, files, archivePassword, dictSize, threads)
+
+	cmd := exec.Command(sevenZipPath, args...)
+	cmd.Dir = sourceDir
+	var buf bytes.Buffer
+	progress := newProgressSnapshot(4096)
+	mw := io.MultiWriter(runtimeLogOutput, &buf, progress)
+	cmd.Stdout = mw
+	cmd.Stderr = mw
+
+	stepLog("执行命令: %s %s", sevenZipPath, strings.Join(args, " "))
+	err := cmd.Start()
+	if err != nil {
+		return fmt.Errorf("启动 7z 失败: %w", err)
+	}
+
+	stopHeartbeat := startProgressHeartbeat("7z 压缩", progress, 10*time.Minute)
+	err = cmd.Wait()
+	stopHeartbeat()
+	if err != nil {
+		return fmt.Errorf("7z 压缩失败: %w\n%s", err, strings.TrimSpace(buf.String()))
+	}
+	return nil
+}
+
+func buildSevenZipArgs(outArchive string, files []string, archivePassword string, dictSize, threads int) []string {
 	args := []string{
 		"a",
 		"-t7z",
@@ -180,22 +207,29 @@ func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, 
 		fmt.Sprintf("-md=%dm", dictSize),
 		fmt.Sprintf("-mmt=%d", threads),
 		"-mhe=on",
+		"-bsp1",
 		"-p" + archivePassword,
 		outArchive,
 	}
 	args = append(args, files...)
+	return args
+}
 
-	cmd := exec.Command(sevenZipPath, args...)
-	cmd.Dir = sourceDir
-	var buf bytes.Buffer
-	mw := io.MultiWriter(runtimeLogOutput, &buf)
-	cmd.Stdout = mw
-	cmd.Stderr = mw
-
-	stepLog("执行命令: %s %s", sevenZipPath, strings.Join(args, " "))
-	err := cmd.Run()
-	if err != nil {
-		return fmt.Errorf("7z 压缩失败: %w\n%s", err, strings.TrimSpace(buf.String()))
+func startProgressHeartbeat(label string, progress *progressSnapshot, interval time.Duration) func() {
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				stepLog("INFO: %s仍在运行，最近输出: %s", label, progress.Latest())
+			case <-done:
+				return
+			}
+		}
+	}()
+	return func() {
+		close(done)
 	}
-	return nil
 }

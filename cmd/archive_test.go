@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -91,6 +92,14 @@ func TestDiscoverSevenZipLooksUpExplicitCommandName(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("discoverSevenZip = %q, want %q", got, want)
+	}
+}
+
+func TestBuildSevenZipArgsEnablesProgressOutput(t *testing.T) {
+	args := buildSevenZipArgs("out.7z", []string{"a.mp4"}, "secret", 64, 2)
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "-bsp1") {
+		t.Fatalf("7z args %q missing -bsp1 progress output switch", joined)
 	}
 }
 
