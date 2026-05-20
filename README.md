@@ -76,7 +76,7 @@ If 7z is unavailable or compression fails and `archive.allow_tgz_fallback` is `t
 
 ### Thumbnails
 
-Thumbnails are enabled by default. For each matched video, the CLI writes a JPEG contact sheet next to the archive in the destination directory. The default layout is `4` columns by `15` rows, and the image label includes file name, file size, and duration.
+Thumbnails are enabled by default. For each matched video, the CLI writes a JPEG contact sheet next to the archive in the destination directory. The default layout is `4` columns by `15` rows. Frames are sampled by seeking to evenly spaced points in the video, similar to media player thumbnail generation, instead of scanning the full stream with an fps filter.
 
 In the normal archive flow, thumbnails are generated before compression starts. This makes missing `ffmpeg` / `ffprobe` fail early, before spending time creating an archive.
 

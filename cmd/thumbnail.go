@@ -3,6 +3,10 @@ package cmd
 import (
 	"bytes"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/jpeg"
 	"io"
 	"os"
 	"os/exec"
@@ -113,51 +117,14 @@ func buildFFprobeDurationArgs(input string) []string {
 	}
 }
 
-func buildFFmpegThumbnailArgs(input, output string, opts thumbnailOptions, displayName, sizeText, durationText string) []string {
-	return buildFFmpegThumbnailArgsWithFPS(input, output, opts, displayName, sizeText, durationText, "1/10")
-}
-
-func buildFFmpegThumbnailArgsForDuration(input, output string, opts thumbnailOptions, displayName, sizeText, durationText string, duration time.Duration) []string {
-	return buildFFmpegThumbnailArgsWithFPS(input, output, opts, displayName, sizeText, durationText, thumbnailFPS(opts, duration))
-}
-
-func buildFFmpegThumbnailArgsWithFPS(input, output string, opts thumbnailOptions, displayName, sizeText, durationText, fps string) []string {
-	label := escapeDrawText(fmt.Sprintf("%s | %s | %s", displayName, sizeText, durationText))
-	filter := fmt.Sprintf(
-		"fps=%s,scale=%d:-1,tile=%dx%d,drawtext=text='%s':x=8:y=8:fontsize=24:fontcolor=white:box=1:boxcolor=black@0.65",
-		fps,
-		opts.Width,
-		opts.Columns,
-		opts.Rows,
-		label,
-	)
+func buildFFmpegFrameArgs(input, output string, at time.Duration, width int) []string {
 	return []string{
 		"-y",
+		"-ss", formatFFmpegTimestamp(at),
 		"-i", input,
 		"-frames:v", "1",
-		"-vf", filter,
-		output,
-	}
-}
-
-func buildPlainFFmpegThumbnailArgs(input, output string, opts thumbnailOptions) []string {
-	filter := fmt.Sprintf("fps=1/10,scale=%d:-1,tile=%dx%d", opts.Width, opts.Columns, opts.Rows)
-	return []string{
-		"-y",
-		"-i", input,
-		"-frames:v", "1",
-		"-vf", filter,
-		output,
-	}
-}
-
-func buildPlainFFmpegThumbnailArgsForDuration(input, output string, opts thumbnailOptions, duration time.Duration) []string {
-	filter := fmt.Sprintf("fps=%s,scale=%d:-1,tile=%dx%d", thumbnailFPS(opts, duration), opts.Width, opts.Columns, opts.Rows)
-	return []string{
-		"-y",
-		"-i", input,
-		"-frames:v", "1",
-		"-vf", filter,
+		"-vf", fmt.Sprintf("scale=%d:-1", width),
+		"-q:v", "3",
 		output,
 	}
 }
@@ -180,26 +147,111 @@ func generateThumbnails(sourceDir, sourceBase, destDir string, files []string, o
 
 	for _, out := range outputs {
 		input := filepath.Join(sourceDir, out.InputRel)
-		info, err := os.Stat(input)
-		if err != nil {
-			return fmt.Errorf("读取视频文件失败 %s: %w", input, err)
-		}
 		duration, err := probeDuration(opts.FFprobe, input)
 		if err != nil {
 			return err
 		}
-		durationText := formatDuration(duration)
-		args := buildFFmpegThumbnailArgsForDuration(input, out.OutputPath, opts, filepath.Base(out.InputRel), formatBytes(info.Size()), durationText, duration)
-		if err := runLoggedCommand(opts.FFmpeg, args); err != nil {
-			stepLog("INFO: 带文字缩略图生成失败，将生成无文字网格: %v", err)
-			plainArgs := buildPlainFFmpegThumbnailArgsForDuration(input, out.OutputPath, opts, duration)
-			if plainErr := runLoggedCommand(opts.FFmpeg, plainArgs); plainErr != nil {
-				return fmt.Errorf("生成缩略图失败 %s: %w", input, plainErr)
-			}
+		if err := generateSeekContactSheet(input, out.OutputPath, opts, duration); err != nil {
+			return err
 		}
 		stepLog("缩略图生成完成: %s", out.OutputPath)
 	}
 	return nil
+}
+
+func generateSeekContactSheet(input, output string, opts thumbnailOptions, duration time.Duration) error {
+	tempDir, err := os.MkdirTemp("", "qbit-upload-frames-*")
+	if err != nil {
+		return fmt.Errorf("创建缩略图临时目录失败: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	count := opts.Columns * opts.Rows
+	framePaths := make([]string, 0, count)
+	for i, at := range sampleTimes(count, duration) {
+		framePath := filepath.Join(tempDir, fmt.Sprintf("frame-%03d.jpg", i))
+		args := buildFFmpegFrameArgs(input, framePath, at, opts.Width)
+		if err := runLoggedCommand(opts.FFmpeg, args); err != nil {
+			return fmt.Errorf("抽取缩略图帧失败 %s at %s: %w", input, formatDuration(at), err)
+		}
+		framePaths = append(framePaths, framePath)
+	}
+	if err := stitchFrames(framePaths, output, opts.Columns, opts.Rows); err != nil {
+		return fmt.Errorf("拼接缩略图失败 %s: %w", output, err)
+	}
+	return nil
+}
+
+func sampleTimes(count int, duration time.Duration) []time.Duration {
+	if count <= 0 {
+		return nil
+	}
+	if duration <= 0 {
+		duration = time.Duration(count+1) * time.Second
+	}
+	step := duration / time.Duration(count+1)
+	times := make([]time.Duration, 0, count)
+	for i := 1; i <= count; i++ {
+		times = append(times, step*time.Duration(i))
+	}
+	return times
+}
+
+func stitchFrames(framePaths []string, output string, columns, rows int) error {
+	if columns <= 0 || rows <= 0 {
+		return fmt.Errorf("invalid thumbnail grid: %dx%d", columns, rows)
+	}
+	images := make([]image.Image, 0, len(framePaths))
+	cellW, cellH := 0, 0
+	for _, path := range framePaths {
+		img, err := decodeImage(path)
+		if err != nil {
+			return err
+		}
+		b := img.Bounds()
+		if cellW == 0 || b.Dx() > cellW {
+			cellW = b.Dx()
+		}
+		if cellH == 0 || b.Dy() > cellH {
+			cellH = b.Dy()
+		}
+		images = append(images, img)
+	}
+	if cellW == 0 || cellH == 0 {
+		return fmt.Errorf("no frames to stitch")
+	}
+
+	canvas := image.NewRGBA(image.Rect(0, 0, columns*cellW, rows*cellH))
+	draw.Draw(canvas, canvas.Bounds(), &image.Uniform{C: color.Black}, image.Point{}, draw.Src)
+	for i, img := range images {
+		if i >= columns*rows {
+			break
+		}
+		x := (i % columns) * cellW
+		y := (i / columns) * cellH
+		dst := image.Rect(x, y, x+img.Bounds().Dx(), y+img.Bounds().Dy())
+		draw.Draw(canvas, dst, img, img.Bounds().Min, draw.Src)
+	}
+
+	out, err := os.Create(output)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	return jpeg.Encode(out, canvas, &jpeg.Options{Quality: 90})
+}
+
+func decodeImage(path string) (image.Image, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	img, _, err := image.Decode(f)
+	if err != nil {
+		return nil, err
+	}
+	return img, nil
 }
 
 func probeDuration(ffprobePath, input string) (time.Duration, error) {
@@ -239,39 +291,6 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%02d:%02d:%02d", hours, minutes, seconds)
 }
 
-func formatBytes(size int64) string {
-	const unit = 1024
-	if size < unit {
-		return fmt.Sprintf("%d B", size)
-	}
-	value := float64(size)
-	for _, suffix := range []string{"KiB", "MiB", "GiB", "TiB"} {
-		value /= unit
-		if value < unit {
-			return fmt.Sprintf("%.1f %s", value, suffix)
-		}
-	}
-	return fmt.Sprintf("%.1f PiB", value/unit)
-}
-
-func thumbnailFPS(opts thumbnailOptions, duration time.Duration) string {
-	if duration <= 0 || opts.Columns <= 0 || opts.Rows <= 0 {
-		return "1/10"
-	}
-	frameCount := float64(opts.Columns * opts.Rows)
-	fps := frameCount / duration.Seconds()
-	if fps <= 0 {
-		return "1/10"
-	}
-	return strconv.FormatFloat(fps, 'f', 6, 64)
-}
-
-func escapeDrawText(s string) string {
-	replacer := strings.NewReplacer(
-		"\\", "\\\\",
-		":", "\\:",
-		"'", "\\'",
-		"%", "\\%",
-	)
-	return replacer.Replace(s)
+func formatFFmpegTimestamp(d time.Duration) string {
+	return strconv.FormatFloat(d.Seconds(), 'f', 3, 64)
 }

@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveThumbnailDefaults(t *testing.T) {
@@ -42,11 +43,24 @@ func TestThumbnailOutputPathsAvoidDuplicateVideoBaseNames(t *testing.T) {
 }
 
 func TestBuildFFmpegThumbnailArgs(t *testing.T) {
-	args := buildFFmpegThumbnailArgs("in.mp4", "out.jpg", thumbnailOptions{Columns: 4, Rows: 15, Width: 320}, "name.mp4", "1.5 GiB", "01:02:03")
+	args := buildFFmpegFrameArgs("in.mp4", "out.jpg", 123*time.Second, 320)
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"-i in.mp4", "tile=4x15", "scale=320:-1", "out.jpg"} {
+	for _, want := range []string{"-ss 123", "-i in.mp4", "scale=320:-1", "-frames:v 1", "out.jpg"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("ffmpeg args %q missing %q", joined, want)
+		}
+	}
+}
+
+func TestSampleTimesUseInteriorEvenSpacing(t *testing.T) {
+	got := sampleTimes(4, 100*time.Second)
+	want := []time.Duration{20 * time.Second, 40 * time.Second, 60 * time.Second, 80 * time.Second}
+	if len(got) != len(want) {
+		t.Fatalf("sampleTimes len = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sampleTimes[%d] = %s, want %s", i, got[i], want[i])
 		}
 	}
 }

@@ -24,13 +24,13 @@ The `.tgz` fallback should be streaming and low-memory: Go standard library `arc
 
 ## Thumbnail Behavior
 
-Thumbnail generation is enabled by default. It runs after archive creation succeeds and before deleting the source directory. For each eligible video, the CLI creates one JPEG contact sheet in the destination directory. The file name uses the source directory base name and a stable suffix, for example:
+Thumbnail generation is enabled by default. It runs before archive creation so ffmpeg/ffprobe failures happen early. For each eligible video, the CLI creates one JPEG contact sheet in the destination directory. The file name uses the source directory base name and a stable suffix, for example:
 
 `<source-base>-<video-base>-thumbnail.jpg`
 
 If two videos have the same base name, append a numeric suffix to avoid collisions. Existing destination files should cause a clear error rather than being overwritten.
 
-Each contact sheet defaults to `4` columns and `15` rows, for `60` sampled frames arranged as a vertical sheet. The image includes extra information: file name, file size, and duration. File size comes from Go. Duration comes from `ffprobe`. Frame extraction and tiling use `ffmpeg`.
+Each contact sheet defaults to `4` columns and `15` rows, for `60` sampled frames arranged as a vertical sheet. The current behavior intentionally omits text labels. Duration comes from `ffprobe`; frame extraction uses `ffmpeg` seek-based sampling at evenly spaced points, and tiling is handled by Go image composition.
 
 Configuration should allow:
 
@@ -48,7 +48,7 @@ CLI flags should mirror the practical controls:
 - `--thumbnail-rows`
 - `--thumbnail-width`
 
-If `ffmpeg` or `ffprobe` is missing while thumbnail generation is enabled, the command should fail with an actionable error. If metadata text rendering fails because of ffmpeg filter/font differences, the implementation may fall back to a plain tiled image and record the downgrade at INFO level.
+If `ffmpeg` or `ffprobe` is missing while thumbnail generation is enabled, the command should fail with an actionable error.
 
 ## Configuration Shape
 
