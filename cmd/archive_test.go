@@ -32,7 +32,7 @@ func TestCreateTgzIncludesOnlyRequestedFiles(t *testing.T) {
 
 func TestDiscoverSevenZipPrefersEmbeddedCandidate(t *testing.T) {
 	execDir := t.TempDir()
-	embedded := filepath.Join(execDir, "tools", runtime.GOOS+"-"+runtime.GOARCH, executableName("7z"))
+	embedded := filepath.Join(execDir, "tools", runtime.GOOS+"-"+runtime.GOARCH, preferredSevenZipNames()[0])
 	mustWriteExecutable(t, embedded)
 
 	got, err := discoverSevenZip("", execDir, "tools", func(name string) (string, error) {
@@ -43,6 +43,25 @@ func TestDiscoverSevenZipPrefersEmbeddedCandidate(t *testing.T) {
 	}
 	if got != embedded {
 		t.Fatalf("discoverSevenZip = %q, want %q", got, embedded)
+	}
+}
+
+func TestDiscoverSevenZipPrefersOfficialLinuxCommandName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows official command remains 7z.exe")
+	}
+	execDir := t.TempDir()
+	oldPort := filepath.Join(execDir, "tools", runtime.GOOS+"-"+runtime.GOARCH, "7z")
+	official := filepath.Join(execDir, "tools", runtime.GOOS+"-"+runtime.GOARCH, "7zz")
+	mustWriteExecutable(t, oldPort)
+	mustWriteExecutable(t, official)
+
+	got, err := discoverSevenZip("", execDir, "tools", nil)
+	if err != nil {
+		t.Fatalf("discoverSevenZip returned error: %v", err)
+	}
+	if got != official {
+		t.Fatalf("discoverSevenZip = %q, want official 7zz %q", got, official)
 	}
 }
 

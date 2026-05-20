@@ -47,7 +47,7 @@ func discoverSevenZip(explicitPath, execDir, embeddedDir string, lookPath func(s
 		embeddedDir = "tools"
 	}
 
-	names := []string{executableName("7z"), executableName("7zz")}
+	names := preferredSevenZipNames()
 	for _, name := range names {
 		candidates := []string{
 			filepath.Join(execDir, embeddedDir, runtime.GOOS+"-"+runtime.GOARCH, name),
@@ -61,7 +61,7 @@ func discoverSevenZip(explicitPath, execDir, embeddedDir string, lookPath func(s
 	}
 
 	var lastErr error
-	for _, name := range []string{"7z", "7zz"} {
+	for _, name := range preferredSevenZipNames() {
 		found, err := lookPath(name)
 		if err == nil && strings.TrimSpace(found) != "" {
 			return found, nil
@@ -79,6 +79,13 @@ func executableName(name string) string {
 		return name + ".exe"
 	}
 	return name
+}
+
+func preferredSevenZipNames() []string {
+	if runtime.GOOS == "windows" {
+		return []string{executableName("7z"), executableName("7zz")}
+	}
+	return []string{executableName("7zz"), executableName("7z")}
 }
 
 func isExecutableFile(path string) bool {

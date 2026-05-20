@@ -7,7 +7,7 @@
 - Filter video files by extension + MIME detection.
 - Ignore files smaller than a configurable minimum size.
 - Encrypt archive content and file list with 7z password mode (`-p` + `-mhe=on`).
-- Linux amd64/arm64 can use an embedded `7z`/`7zz` under `tools/<goos>-<goarch>/`.
+- Linux amd64/arm64 can use an embedded official `7zz`/`7z` under `tools/<goos>-<goarch>/`.
 - Fall back to an unencrypted `.tgz` archive when 7z is unavailable or fails.
 - Generate ffmpeg thumbnail contact sheets for matched videos.
 - Optional dry-run mode.
@@ -57,12 +57,14 @@ CLI flags override config values.
 
 ### Linux 7z and tgz fallback
 
-When `seven_zip` / `--7z` is not set, the CLI looks for embedded tools before checking `PATH`:
+When `seven_zip` / `--7z` is not set, the CLI looks for embedded tools before checking `PATH`. On non-Windows systems it prefers `7zz`, because current official 7-Zip Linux releases use the new Linux console version and the older p7zip port is no longer recommended by 7-Zip upstream.
 
-- `tools/linux-amd64/7z` or `tools/linux-amd64/7zz`
-- `tools/linux-arm64/7z` or `tools/linux-arm64/7zz`
-- `7z` or `7zz` next to the executable
-- `7z` or `7zz` in `PATH`
+- `tools/linux-amd64/7zz` or `tools/linux-amd64/7z`
+- `tools/linux-arm64/7zz` or `tools/linux-arm64/7z`
+- `7zz` or `7z` next to the executable
+- `7zz` or `7z` in `PATH`
+
+If you distribute an embedded 7-Zip binary with this tool, include the 7-Zip license/source attribution required by 7-Zip's LGPL distribution guidance.
 
 If 7z is unavailable or compression fails and `archive.allow_tgz_fallback` is `true`, the CLI writes an unencrypted `.tgz` archive and records the fallback in the run log at INFO level.
 

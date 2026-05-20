@@ -1,6 +1,7 @@
 dest_dir: D:/downloads/done
 password: your-password
-seven_zip: 7z
+# Optional. Leave empty to prefer embedded official 7-Zip, then PATH.
+# seven_zip: 7zz
 min_size_mb: 50
 reserve_memory_mb: 2048
 
