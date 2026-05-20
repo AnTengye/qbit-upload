@@ -120,11 +120,15 @@ func buildFFprobeDurationArgs(input string) []string {
 func buildFFmpegFrameArgs(input, output string, at time.Duration, width int) []string {
 	return []string{
 		"-y",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-nostats",
 		"-ss", formatFFmpegTimestamp(at),
 		"-i", input,
 		"-frames:v", "1",
 		"-vf", fmt.Sprintf("scale=%d:-1", width),
 		"-q:v", "3",
+		"-update", "1",
 		output,
 	}
 }
@@ -171,11 +175,13 @@ func generateSeekContactSheet(input, output string, opts thumbnailOptions, durat
 	for i, at := range sampleTimes(count, duration) {
 		framePath := filepath.Join(tempDir, fmt.Sprintf("frame-%03d.jpg", i))
 		args := buildFFmpegFrameArgs(input, framePath, at, opts.Width)
-		if err := runLoggedCommand(opts.FFmpeg, args); err != nil {
+		stepLog("缩略图进度: 抽取帧 %d/%d (time=%s)", i+1, count, formatDuration(at))
+		if err := runQuietCommand(opts.FFmpeg, args); err != nil {
 			return fmt.Errorf("抽取缩略图帧失败 %s at %s: %w", input, formatDuration(at), err)
 		}
 		framePaths = append(framePaths, framePath)
 	}
+	stepLog("缩略图进度: 拼接 %d 张帧 -> %s", len(framePaths), output)
 	if err := stitchFrames(framePaths, output, opts.Columns, opts.Rows); err != nil {
 		return fmt.Errorf("拼接缩略图失败 %s: %w", output, err)
 	}
@@ -277,6 +283,17 @@ func runLoggedCommand(path string, args []string) error {
 	cmd.Stdout = mw
 	cmd.Stderr = mw
 	stepLog("执行命令: %s %s", path, strings.Join(args, " "))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(buf.String()))
+	}
+	return nil
+}
+
+func runQuietCommand(path string, args []string) error {
+	cmd := exec.Command(path, args...)
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%w\n%s", err, strings.TrimSpace(buf.String()))
 	}

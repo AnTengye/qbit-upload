@@ -45,7 +45,7 @@ func TestThumbnailOutputPathsAvoidDuplicateVideoBaseNames(t *testing.T) {
 func TestBuildFFmpegThumbnailArgs(t *testing.T) {
 	args := buildFFmpegFrameArgs("in.mp4", "out.jpg", 123*time.Second, 320)
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"-ss 123", "-i in.mp4", "scale=320:-1", "-frames:v 1", "out.jpg"} {
+	for _, want := range []string{"-hide_banner", "-loglevel error", "-ss 123", "-i in.mp4", "scale=320:-1", "-frames:v 1", "-update 1", "out.jpg"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("ffmpeg args %q missing %q", joined, want)
 		}
