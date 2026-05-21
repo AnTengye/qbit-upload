@@ -13,3 +13,11 @@ func TestRootCommandHasThumbnailSubcommand(t *testing.T) {
 		t.Fatalf("thumbnail subcommand not registered")
 	}
 }
+
+func TestRootCommandHasSplitFlag(t *testing.T) {
+	root := newRootCmd()
+
+	if flag := root.PersistentFlags().Lookup("split"); flag == nil {
+		t.Fatalf("split flag not registered")
+	}
+}

@@ -7,6 +7,7 @@
 - Filter video files by extension + MIME detection.
 - Ignore files smaller than a configurable minimum size.
 - Encrypt archive content and file list with 7z password mode (`-p` + `-mhe=on`).
+- Optional split mode to create one archive per matched video file.
 - Linux amd64/arm64 can use an embedded official `7zz`/`7z` under `tools/<goos>-<goarch>/`.
 - Fall back to an unencrypted `.tgz` archive when 7z is unavailable or fails.
 - Generate ffmpeg thumbnail contact sheets for matched videos.
@@ -29,6 +30,12 @@ Use explicit config:
 
 ```powershell
 go run . --config qbit-upload.example.yaml <source-dir>
+```
+
+Create one archive per matched video:
+
+```powershell
+go run . --split --config qbit-upload.example.yaml <source-dir>
 ```
 
 Generate thumbnails only, without archiving or deleting the source directory:
@@ -73,6 +80,17 @@ When `seven_zip` / `--7z` is not set, the CLI looks for embedded tools before ch
 If you distribute an embedded 7-Zip binary with this tool, include the 7-Zip license/source attribution required by 7-Zip's LGPL distribution guidance.
 
 If 7z is unavailable or compression fails and `archive.allow_tgz_fallback` is `true`, the CLI writes an unencrypted `.tgz` archive and records the fallback in the run log at INFO level.
+
+### Archive Split Mode
+
+By default, all matched videos under the source directory are written into one archive named after the source directory, for example `MyFolder.7z`.
+
+Use `--split` or config `archive.split: true` to create one archive per matched video. Archive names are based on each video file name without the video extension:
+
+- `Movie.mp4` -> `Movie.7z`
+- `nested/Movie.mkv` -> `Movie-2.7z` when another matched video already uses `Movie.7z`
+
+When tgz fallback is used, the same naming rule is used with `.tgz`.
 
 ### Thumbnails
 

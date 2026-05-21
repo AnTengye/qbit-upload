@@ -103,6 +103,50 @@ func TestBuildSevenZipArgsEnablesProgressOutput(t *testing.T) {
 	}
 }
 
+func TestPlanSplitArchivesUsesVideoBaseNames(t *testing.T) {
+	dest := t.TempDir()
+	files := []string{"movie.mp4", filepath.Join("nested", "movie.mkv"), "clip.avi"}
+
+	got, err := planArchiveOutputs("source", dest, files, archiveFormat7z, true)
+	if err != nil {
+		t.Fatalf("planArchiveOutputs returned error: %v", err)
+	}
+
+	want := []archiveOutput{
+		{Path: filepath.Join(dest, "movie.7z"), Files: []string{"movie.mp4"}},
+		{Path: filepath.Join(dest, "movie-2.7z"), Files: []string{filepath.Join("nested", "movie.mkv")}},
+		{Path: filepath.Join(dest, "clip.7z"), Files: []string{"clip.avi"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("archive outputs = %#v, want %#v", got, want)
+	}
+}
+
+func TestPlanSingleArchiveUsesSourceDirectoryName(t *testing.T) {
+	dest := t.TempDir()
+	files := []string{"a.mp4", "b.mkv"}
+
+	got, err := planArchiveOutputs("source", dest, files, archiveFormatTgz, false)
+	if err != nil {
+		t.Fatalf("planArchiveOutputs returned error: %v", err)
+	}
+
+	want := []archiveOutput{
+		{Path: filepath.Join(dest, "source.tgz"), Files: files},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("archive outputs = %#v, want %#v", got, want)
+	}
+}
+
+func TestArchivePathWithFormatPreservesPlannedBaseName(t *testing.T) {
+	got := archivePathWithFormat(filepath.Join("out", "movie-2.7z"), archiveFormatTgz)
+	want := filepath.Join("out", "movie-2.tgz")
+	if got != want {
+		t.Fatalf("archivePathWithFormat = %q, want %q", got, want)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

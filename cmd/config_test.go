@@ -14,6 +14,7 @@ password: secret
 archive:
   allow_tgz_fallback: false
   embedded_7z_dir: bundled
+  split: true
 thumbnail:
   enabled: false
   ffmpeg: /usr/bin/ffmpeg
@@ -39,6 +40,9 @@ thumbnail:
 	}
 	if cfg.Archive.Embedded7zDir != "bundled" {
 		t.Fatalf("embedded_7z_dir = %q", cfg.Archive.Embedded7zDir)
+	}
+	if cfg.Archive.Split == nil || !*cfg.Archive.Split {
+		t.Fatalf("archive split = %#v, want true", cfg.Archive.Split)
 	}
 	if cfg.Thumbnail.Enabled == nil || *cfg.Thumbnail.Enabled {
 		t.Fatalf("thumbnail enabled = %#v, want false", cfg.Thumbnail.Enabled)

@@ -27,6 +27,11 @@ type archiveResult struct {
 	UsedFallback bool
 }
 
+type archiveOutput struct {
+	Path  string
+	Files []string
+}
+
 func discoverSevenZip(explicitPath, execDir, embeddedDir string, lookPath func(string) (string, error)) (string, error) {
 	if lookPath == nil {
 		lookPath = exec.LookPath
@@ -155,6 +160,42 @@ func createTgzArchive(sourceDir, outArchive string, files []string) error {
 
 func archiveFileName(sourceBase string, format archiveFormat) string {
 	return sourceBase + "." + string(format)
+}
+
+func archivePathWithFormat(path string, format archiveFormat) string {
+	ext := filepath.Ext(path)
+	return strings.TrimSuffix(path, ext) + "." + string(format)
+}
+
+func planArchiveOutputs(sourceBase, destDir string, files []string, format archiveFormat, split bool) ([]archiveOutput, error) {
+	if !split {
+		return []archiveOutput{{
+			Path:  filepath.Join(destDir, archiveFileName(sourceBase, format)),
+			Files: append([]string(nil), files...),
+		}}, nil
+	}
+
+	outputs := make([]archiveOutput, 0, len(files))
+	seen := make(map[string]int, len(files))
+	for _, rel := range files {
+		base := strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
+		if strings.TrimSpace(base) == "" {
+			base = "video"
+		}
+
+		key := base + "." + string(format)
+		seen[key]++
+		nameBase := base
+		if seen[key] > 1 {
+			nameBase = fmt.Sprintf("%s-%d", base, seen[key])
+		}
+
+		outputs = append(outputs, archiveOutput{
+			Path:  filepath.Join(destDir, archiveFileName(nameBase, format)),
+			Files: []string{rel},
+		})
+	}
+	return outputs, nil
 }
 
 func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, archivePassword string, reserveMemoryMB int64) error {

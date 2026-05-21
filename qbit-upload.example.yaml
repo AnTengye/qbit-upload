@@ -8,6 +8,8 @@ reserve_memory_mb: 2048
 archive:
   allow_tgz_fallback: true
   embedded_7z_dir: tools
+  # Set true to create one archive per matched video file.
+  split: false
 
 thumbnail:
   enabled: true

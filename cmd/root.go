@@ -26,6 +26,7 @@ var (
 	reserveMemoryMB  int64
 	allowTgzFallback bool
 	embedded7zDir    string
+	splitArchive     bool
 	thumbnailEnabled bool
 	ffmpegPath       string
 	ffprobePath      string
@@ -60,6 +61,7 @@ func newRootCmd() *cobra.Command {
 	flags.Int64Var(&reserveMemoryMB, "reserve-memory-mb", 2048, "压缩时系统至少保留的可用物理内存(MB)")
 	flags.BoolVar(&allowTgzFallback, "allow-tgz-fallback", true, "7z 不可用或失败时生成未加密 .tgz")
 	flags.StringVar(&embedded7zDir, "embedded-7z-dir", "tools", "内嵌 7z 工具目录（相对程序目录）")
+	flags.BoolVar(&splitArchive, "split", false, "每个视频文件单独生成一个压缩包")
 	flags.BoolVar(&thumbnailEnabled, "thumbnail", true, "生成视频缩略图长图")
 	flags.StringVar(&ffmpegPath, "ffmpeg", "ffmpeg", "ffmpeg 可执行文件路径")
 	flags.StringVar(&ffprobePath, "ffprobe", "ffprobe", "ffprobe 可执行文件路径")
@@ -157,10 +159,15 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		stepLog("INFO: 7z 不可用，将使用未加密 tgz 兜底: %v", sevenZipErr)
 	}
 
-	finalArchive := filepath.Join(absDest, archiveFileName(filepath.Base(absSource), plannedFormat))
-	stepLog("检查目标压缩包是否冲突: %s", finalArchive)
-	if err := ensureOutputDoesNotExist(finalArchive); err != nil {
+	archiveOutputs, err := planArchiveOutputs(filepath.Base(absSource), absDest, videoFiles, plannedFormat, opts.Archive.Split)
+	if err != nil {
 		return err
+	}
+	stepLog("检查目标压缩包是否冲突: %d 个", len(archiveOutputs))
+	for _, out := range archiveOutputs {
+		if err := ensureOutputDoesNotExist(out.Path); err != nil {
+			return err
+		}
 	}
 
 	if opts.DryRun {
@@ -169,7 +176,10 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		for _, f := range videoFiles {
 			fmt.Printf("[dry-run]   - %s\n", f)
 		}
-		fmt.Printf("[dry-run] 目标压缩包: %s\n", finalArchive)
+		fmt.Printf("[dry-run] 目标压缩包数量: %d\n", len(archiveOutputs))
+		for _, out := range archiveOutputs {
+			fmt.Printf("[dry-run]   - %s\n", out.Path)
+		}
 		if plannedFormat == archiveFormat7z {
 			fmt.Printf("[dry-run] 压缩格式: 7z (%s)\n", sevenZipPath)
 		} else {
@@ -197,49 +207,56 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		}
 	}
 
-	tempArchive := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.%s", filepath.Base(absSource), time.Now().UnixNano(), plannedFormat))
-	stepLog("临时压缩包路径: %s", tempArchive)
-	moved := false
-	defer func() {
-		if !moved {
-			_ = os.Remove(tempArchive)
-		}
-	}()
+	finalArchives := make([]string, 0, len(archiveOutputs))
+	for i, out := range archiveOutputs {
+		format := plannedFormat
+		finalArchive := out.Path
+		tempArchive := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d_%d.%s", filepath.Base(absSource), time.Now().UnixNano(), i, format))
+		stepLog("临时压缩包路径: %s", tempArchive)
+		moved := false
+		defer func() {
+			if !moved {
+				_ = os.Remove(tempArchive)
+			}
+		}()
 
-	if plannedFormat == archiveFormat7z {
-		if strings.TrimSpace(opts.Password) == "" {
-			return fmt.Errorf("密码不能为空：使用 7z 时请通过 --password 或配置文件提供")
-		}
-		stepLog("开始调用 7z 压缩（将实时输出 7z 日志）")
-		if err := compressWith7z(absSource, tempArchive, videoFiles, sevenZipPath, opts.Password, opts.ReserveMemoryMB); err != nil {
-			if !opts.Archive.AllowTgzFallback {
+		if format == archiveFormat7z {
+			if strings.TrimSpace(opts.Password) == "" {
+				return fmt.Errorf("密码不能为空：使用 7z 时请通过 --password 或配置文件提供")
+			}
+			stepLog("开始调用 7z 压缩（将实时输出 7z 日志）")
+			if err := compressWith7z(absSource, tempArchive, out.Files, sevenZipPath, opts.Password, opts.ReserveMemoryMB); err != nil {
+				if !opts.Archive.AllowTgzFallback {
+					return err
+				}
+				stepLog("INFO: 7z 压缩失败，将使用未加密 tgz 兜底: %v", err)
+				_ = os.Remove(tempArchive)
+				format = archiveFormatTgz
+				finalArchive = archivePathWithFormat(out.Path, format)
+				if err := ensureOutputDoesNotExist(finalArchive); err != nil {
+					return err
+				}
+				tempArchive = filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d_%d.%s", filepath.Base(absSource), time.Now().UnixNano(), i, format))
+				stepLog("临时压缩包路径: %s", tempArchive)
+				if err := createTgzArchive(absSource, tempArchive, out.Files); err != nil {
+					return err
+				}
+			}
+		} else {
+			stepLog("开始创建未加密 tgz 兜底压缩包")
+			if err := createTgzArchive(absSource, tempArchive, out.Files); err != nil {
 				return err
 			}
-			stepLog("INFO: 7z 压缩失败，将使用未加密 tgz 兜底: %v", err)
-			_ = os.Remove(tempArchive)
-			plannedFormat = archiveFormatTgz
-			tempArchive = filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d.tgz", filepath.Base(absSource), time.Now().UnixNano()))
-			finalArchive = filepath.Join(absDest, archiveFileName(filepath.Base(absSource), plannedFormat))
-			if err := ensureOutputDoesNotExist(finalArchive); err != nil {
-				return err
-			}
-			if err := createTgzArchive(absSource, tempArchive, videoFiles); err != nil {
-				return err
-			}
 		}
-	} else {
-		stepLog("开始创建未加密 tgz 兜底压缩包")
-		if err := createTgzArchive(absSource, tempArchive, videoFiles); err != nil {
-			return err
-		}
-	}
-	stepLog("压缩完成: %s", plannedFormat)
+		stepLog("压缩完成: %s", format)
 
-	stepLog("移动压缩包到目标目录")
-	if err := moveFile(tempArchive, finalArchive); err != nil {
-		return fmt.Errorf("移动压缩包失败: %w", err)
+		stepLog("移动压缩包到目标目录")
+		if err := moveFile(tempArchive, finalArchive); err != nil {
+			return fmt.Errorf("移动压缩包失败: %w", err)
+		}
+		moved = true
+		finalArchives = append(finalArchives, finalArchive)
 	}
-	moved = true
 
 	stepLog("删除源目录")
 	if err := os.RemoveAll(absSource); err != nil {
@@ -247,7 +264,10 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	}
 
 	stepLog("任务完成")
-	fmt.Printf("已完成: %d 个视频 -> %s\n", len(videoFiles), finalArchive)
+	fmt.Printf("已完成: %d 个视频 -> %d 个压缩包\n", len(videoFiles), len(finalArchives))
+	for _, finalArchive := range finalArchives {
+		fmt.Printf("  - %s\n", finalArchive)
+	}
 	return nil
 }
 
@@ -358,6 +378,7 @@ type appConfig struct {
 type archiveConfig struct {
 	AllowTgzFallback *bool  `json:"allow_tgz_fallback" yaml:"allow_tgz_fallback"`
 	Embedded7zDir    string `json:"embedded_7z_dir" yaml:"embedded_7z_dir"`
+	Split            *bool  `json:"split" yaml:"split"`
 }
 
 type logConfig struct {
@@ -379,6 +400,7 @@ type runOptions struct {
 type archiveOptions struct {
 	AllowTgzFallback bool
 	Embedded7zDir    string
+	Split            bool
 }
 
 func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
@@ -439,6 +461,12 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	}
 	if isFlagChanged(cmd, "embedded-7z-dir") {
 		archive.Embedded7zDir = embedded7zDir
+	}
+	if cfg.Archive.Split != nil {
+		archive.Split = *cfg.Archive.Split
+	}
+	if isFlagChanged(cmd, "split") {
+		archive.Split = splitArchive
 	}
 
 	thumbCfg := cfg.Thumbnail
