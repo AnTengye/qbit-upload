@@ -27,6 +27,7 @@ var (
 	allowTgzFallback bool
 	embedded7zDir    string
 	splitArchive     bool
+	tempDir          string
 	thumbnailEnabled bool
 	ffmpegPath       string
 	ffprobePath      string
@@ -35,6 +36,8 @@ var (
 	thumbnailWidth   int
 	dryRun           bool
 	config           string
+	serviceName      string
+	serviceUser      string
 )
 
 var runtimeLogOutput io.Writer = os.Stdout
@@ -62,6 +65,7 @@ func newRootCmd() *cobra.Command {
 	flags.BoolVar(&allowTgzFallback, "allow-tgz-fallback", true, "7z 不可用或失败时生成未加密 .tgz")
 	flags.StringVar(&embedded7zDir, "embedded-7z-dir", "tools", "内嵌 7z 工具目录（相对程序目录）")
 	flags.BoolVar(&splitArchive, "split", false, "每个视频文件单独生成一个压缩包")
+	flags.StringVar(&tempDir, "temp-dir", "", "压缩临时目录（可选，默认系统临时目录）")
 	flags.BoolVar(&thumbnailEnabled, "thumbnail", true, "生成视频缩略图长图")
 	flags.StringVar(&ffmpegPath, "ffmpeg", "ffmpeg", "ffmpeg 可执行文件路径")
 	flags.StringVar(&ffprobePath, "ffprobe", "ffprobe", "ffprobe 可执行文件路径")
@@ -72,6 +76,8 @@ func newRootCmd() *cobra.Command {
 	flags.StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
 
 	cmd.AddCommand(newThumbnailCmd())
+	cmd.AddCommand(newWatchCmd())
+	cmd.AddCommand(newInstallServiceCmd())
 
 	return cmd
 }
@@ -85,6 +91,31 @@ func newThumbnailCmd() *cobra.Command {
 			return runThumbnailOnly(cmd, args[0])
 		},
 	}
+}
+
+func newWatchCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "watch",
+		Short: "监听配置中的目录，发现复制完成的大视频后自动处理",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runWatch(cmd)
+		},
+	}
+}
+
+func newInstallServiceCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "install-service",
+		Short: "安装 Linux systemd 服务并默认以监听模式自启动",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runInstallService()
+		},
+	}
+	cmd.Flags().StringVar(&serviceName, "name", "qbit-upload", "systemd 服务名称")
+	cmd.Flags().StringVar(&serviceUser, "user", "", "运行服务的 Linux 用户（可选）")
+	return cmd
 }
 
 func run(cmd *cobra.Command, sourceDir string) error {
@@ -107,20 +138,16 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		return err
 	}
 
-	stepLog("解析源目录: %s", sourceDir)
-	absSource, err := filepath.Abs(sourceDir)
-	if err != nil {
-		return fmt.Errorf("解析源目录失败: %w", err)
-	}
+	return processSource(sourceDir, opts)
+}
 
-	stepLog("检查源目录是否存在")
-	info, err := os.Stat(absSource)
+func processSource(sourcePath string, opts runOptions) error {
+	stepLog("解析源路径: %s", sourcePath)
+	input, err := prepareArchiveInput(sourcePath, opts.MinSizeMB*mb)
 	if err != nil {
-		return fmt.Errorf("读取源目录失败: %w", err)
+		return err
 	}
-	if !info.IsDir() {
-		return fmt.Errorf("不是目录: %s", absSource)
-	}
+	stepLog("扫描完成，命中视频文件: %d 个", len(input.Files))
 
 	stepLog("解析目标目录: %s", opts.DestDir)
 	absDest, err := filepath.Abs(opts.DestDir)
@@ -132,16 +159,11 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		return fmt.Errorf("创建目标目录失败: %w", err)
 	}
 
-	stepLog("扫描视频文件（最小大小: %dMB）", opts.MinSizeMB)
-	minSizeBytes := opts.MinSizeMB * mb
-	videoFiles, err := collectEligibleVideos(absSource, minSizeBytes)
+	tempArchiveDir, err := resolveArchiveTempDir(opts.Archive.TempDir)
 	if err != nil {
 		return err
 	}
-	if len(videoFiles) == 0 {
-		return fmt.Errorf("目录中没有大于等于 %dMB 的视频文件", opts.MinSizeMB)
-	}
-	stepLog("扫描完成，命中视频文件: %d 个", len(videoFiles))
+	stepLog("压缩临时目录: %s", tempArchiveDir)
 
 	execPath, err := os.Executable()
 	if err != nil {
@@ -159,7 +181,7 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		stepLog("INFO: 7z 不可用，将使用未加密 tgz 兜底: %v", sevenZipErr)
 	}
 
-	archiveOutputs, err := planArchiveOutputs(filepath.Base(absSource), absDest, videoFiles, plannedFormat, opts.Archive.Split)
+	archiveOutputs, err := planArchiveOutputs(input.SourceBase, absDest, input.Files, plannedFormat, opts.Archive.Split)
 	if err != nil {
 		return err
 	}
@@ -171,9 +193,11 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	}
 
 	if opts.DryRun {
-		fmt.Printf("[dry-run] 源目录: %s\n", absSource)
-		fmt.Printf("[dry-run] 将压缩视频数量: %d\n", len(videoFiles))
-		for _, f := range videoFiles {
+		fmt.Printf("[dry-run] 源路径: %s\n", input.DeletePath)
+		fmt.Printf("[dry-run] 归档根目录: %s\n", input.SourceDir)
+		fmt.Printf("[dry-run] 压缩临时目录: %s\n", tempArchiveDir)
+		fmt.Printf("[dry-run] 将压缩视频数量: %d\n", len(input.Files))
+		for _, f := range input.Files {
 			fmt.Printf("[dry-run]   - %s\n", f)
 		}
 		fmt.Printf("[dry-run] 目标压缩包数量: %d\n", len(archiveOutputs))
@@ -186,7 +210,7 @@ func run(cmd *cobra.Command, sourceDir string) error {
 			fmt.Printf("[dry-run] 压缩格式: tgz（未加密兜底）\n")
 		}
 		if opts.Thumbnail.Enabled {
-			thumbs, err := planThumbnailOutputs(filepath.Base(absSource), absDest, videoFiles)
+			thumbs, err := planThumbnailOutputs(input.SourceBase, absDest, input.Files)
 			if err != nil {
 				return err
 			}
@@ -195,14 +219,14 @@ func run(cmd *cobra.Command, sourceDir string) error {
 				fmt.Printf("[dry-run]   - %s\n", thumb.OutputPath)
 			}
 		}
-		fmt.Printf("[dry-run] 将删除目录: %s\n", absSource)
+		fmt.Printf("[dry-run] 将删除源路径: %s\n", input.DeletePath)
 		stepLog("dry-run 完成")
 		return nil
 	}
 
 	if opts.Thumbnail.Enabled {
 		stepLog("开始生成视频缩略图")
-		if err := generateThumbnails(absSource, filepath.Base(absSource), absDest, videoFiles, opts.Thumbnail); err != nil {
+		if err := generateThumbnails(input.SourceDir, input.SourceBase, absDest, input.Files, opts.Thumbnail); err != nil {
 			return err
 		}
 	}
@@ -211,7 +235,7 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	for i, out := range archiveOutputs {
 		format := plannedFormat
 		finalArchive := out.Path
-		tempArchive := filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d_%d.%s", filepath.Base(absSource), time.Now().UnixNano(), i, format))
+		tempArchive := buildTempArchivePath(tempArchiveDir, input.SourceBase, i, format)
 		stepLog("临时压缩包路径: %s", tempArchive)
 		moved := false
 		defer func() {
@@ -225,7 +249,7 @@ func run(cmd *cobra.Command, sourceDir string) error {
 				return fmt.Errorf("密码不能为空：使用 7z 时请通过 --password 或配置文件提供")
 			}
 			stepLog("开始调用 7z 压缩（将实时输出 7z 日志）")
-			if err := compressWith7z(absSource, tempArchive, out.Files, sevenZipPath, opts.Password, opts.ReserveMemoryMB); err != nil {
+			if err := compressWith7z(input.SourceDir, tempArchive, out.Files, sevenZipPath, opts.Password, opts.ReserveMemoryMB); err != nil {
 				if !opts.Archive.AllowTgzFallback {
 					return err
 				}
@@ -236,15 +260,15 @@ func run(cmd *cobra.Command, sourceDir string) error {
 				if err := ensureOutputDoesNotExist(finalArchive); err != nil {
 					return err
 				}
-				tempArchive = filepath.Join(os.TempDir(), fmt.Sprintf("%s_%d_%d.%s", filepath.Base(absSource), time.Now().UnixNano(), i, format))
+				tempArchive = buildTempArchivePath(tempArchiveDir, input.SourceBase, i, format)
 				stepLog("临时压缩包路径: %s", tempArchive)
-				if err := createTgzArchive(absSource, tempArchive, out.Files); err != nil {
+				if err := createTgzArchive(input.SourceDir, tempArchive, out.Files); err != nil {
 					return err
 				}
 			}
 		} else {
 			stepLog("开始创建未加密 tgz 兜底压缩包")
-			if err := createTgzArchive(absSource, tempArchive, out.Files); err != nil {
+			if err := createTgzArchive(input.SourceDir, tempArchive, out.Files); err != nil {
 				return err
 			}
 		}
@@ -258,13 +282,13 @@ func run(cmd *cobra.Command, sourceDir string) error {
 		finalArchives = append(finalArchives, finalArchive)
 	}
 
-	stepLog("删除源目录")
-	if err := os.RemoveAll(absSource); err != nil {
-		return fmt.Errorf("删除源目录失败: %w", err)
+	stepLog("删除源路径")
+	if err := os.RemoveAll(input.DeletePath); err != nil {
+		return fmt.Errorf("删除源路径失败: %w", err)
 	}
 
 	stepLog("任务完成")
-	fmt.Printf("已完成: %d 个视频 -> %d 个压缩包\n", len(videoFiles), len(finalArchives))
+	fmt.Printf("已完成: %d 个视频 -> %d 个压缩包\n", len(input.Files), len(finalArchives))
 	for _, finalArchive := range finalArchives {
 		fmt.Printf("  - %s\n", finalArchive)
 	}
@@ -325,6 +349,80 @@ func runThumbnailOnly(cmd *cobra.Command, sourceDir string) error {
 	return nil
 }
 
+func prepareArchiveInput(sourcePath string, minSizeBytes int64) (archiveInput, error) {
+	absSource, err := filepath.Abs(sourcePath)
+	if err != nil {
+		return archiveInput{}, fmt.Errorf("解析源路径失败: %w", err)
+	}
+
+	info, err := os.Stat(absSource)
+	if err != nil {
+		return archiveInput{}, fmt.Errorf("读取源路径失败: %w", err)
+	}
+
+	if info.IsDir() {
+		stepLog("扫描视频文件（最小大小: %.2fMB）", float64(minSizeBytes)/mb)
+		videoFiles, err := collectEligibleVideos(absSource, minSizeBytes)
+		if err != nil {
+			return archiveInput{}, err
+		}
+		if len(videoFiles) == 0 {
+			return archiveInput{}, fmt.Errorf("目录中没有大于等于 %.2fMB 的视频文件", float64(minSizeBytes)/mb)
+		}
+		return archiveInput{
+			SourceDir:  absSource,
+			SourceBase: filepath.Base(absSource),
+			DeletePath: absSource,
+			Files:      videoFiles,
+		}, nil
+	}
+
+	if info.Size() < minSizeBytes {
+		return archiveInput{}, fmt.Errorf("文件小于最小大小 %.2fMB: %s", float64(minSizeBytes)/mb, absSource)
+	}
+	ok, err := isVideo(absSource)
+	if err != nil {
+		return archiveInput{}, err
+	}
+	if !ok {
+		return archiveInput{}, fmt.Errorf("不是视频文件: %s", absSource)
+	}
+
+	base := strings.TrimSuffix(filepath.Base(absSource), filepath.Ext(absSource))
+	if strings.TrimSpace(base) == "" {
+		base = "video"
+	}
+	return archiveInput{
+		SourceDir:  filepath.Dir(absSource),
+		SourceBase: base,
+		DeletePath: absSource,
+		Files:      []string{filepath.Base(absSource)},
+	}, nil
+}
+
+func resolveArchiveTempDir(configured string) (string, error) {
+	temp := strings.TrimSpace(configured)
+	if temp == "" {
+		temp = os.TempDir()
+	}
+	abs, err := filepath.Abs(temp)
+	if err != nil {
+		return "", fmt.Errorf("解析压缩临时目录失败: %w", err)
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return "", fmt.Errorf("创建压缩临时目录失败: %w", err)
+	}
+	return abs, nil
+}
+
+func buildTempArchivePath(tempArchiveDir, sourceBase string, index int, format archiveFormat) string {
+	name := strings.TrimSpace(sourceBase)
+	if name == "" {
+		name = "archive"
+	}
+	return filepath.Join(tempArchiveDir, fmt.Sprintf("%s_%d_%d.%s", name, time.Now().UnixNano(), index, format))
+}
+
 func prepareVideoInputs(sourceDir string, opts runOptions) (absSource, absDest string, videoFiles []string, err error) {
 	stepLog("解析源目录: %s", sourceDir)
 	absSource, err = filepath.Abs(sourceDir)
@@ -372,6 +470,7 @@ type appConfig struct {
 	ReserveMemoryMB int64           `json:"reserve_memory_mb" yaml:"reserve_memory_mb"`
 	Archive         archiveConfig   `json:"archive" yaml:"archive"`
 	Thumbnail       thumbnailConfig `json:"thumbnail" yaml:"thumbnail"`
+	Watch           watchConfig     `json:"watch" yaml:"watch"`
 	Log             logConfig       `json:"log" yaml:"log"`
 }
 
@@ -379,6 +478,14 @@ type archiveConfig struct {
 	AllowTgzFallback *bool  `json:"allow_tgz_fallback" yaml:"allow_tgz_fallback"`
 	Embedded7zDir    string `json:"embedded_7z_dir" yaml:"embedded_7z_dir"`
 	Split            *bool  `json:"split" yaml:"split"`
+	TempDir          string `json:"temp_dir" yaml:"temp_dir"`
+}
+
+type watchConfig struct {
+	Enabled      *bool    `json:"enabled" yaml:"enabled"`
+	Dirs         []string `json:"dirs" yaml:"dirs"`
+	StableDelay  string   `json:"stable_delay" yaml:"stable_delay"`
+	PollInterval string   `json:"poll_interval" yaml:"poll_interval"`
 }
 
 type logConfig struct {
@@ -401,6 +508,21 @@ type archiveOptions struct {
 	AllowTgzFallback bool
 	Embedded7zDir    string
 	Split            bool
+	TempDir          string
+}
+
+type watchOptions struct {
+	Enabled      bool
+	Dirs         []string
+	StableDelay  time.Duration
+	PollInterval time.Duration
+}
+
+type archiveInput struct {
+	SourceDir  string
+	SourceBase string
+	DeletePath string
+	Files      []string
 }
 
 func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
@@ -468,6 +590,12 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	if isFlagChanged(cmd, "split") {
 		archive.Split = splitArchive
 	}
+	if strings.TrimSpace(cfg.Archive.TempDir) != "" {
+		archive.TempDir = cfg.Archive.TempDir
+	}
+	if isFlagChanged(cmd, "temp-dir") {
+		archive.TempDir = tempDir
+	}
 
 	thumbCfg := cfg.Thumbnail
 	if isFlagChanged(cmd, "thumbnail") {
@@ -503,6 +631,38 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		Thumbnail:       thumb,
 		DryRun:          dryRun,
 	}, nil
+}
+
+func resolveWatchOptions(cfg watchConfig) (watchOptions, error) {
+	opts := watchOptions{
+		StableDelay:  30 * time.Second,
+		PollInterval: 5 * time.Second,
+	}
+	if cfg.Enabled != nil {
+		opts.Enabled = *cfg.Enabled
+	}
+	opts.Dirs = append([]string(nil), cfg.Dirs...)
+	if strings.TrimSpace(cfg.StableDelay) != "" {
+		d, err := time.ParseDuration(cfg.StableDelay)
+		if err != nil {
+			return watchOptions{}, fmt.Errorf("watch stable_delay 无效: %w", err)
+		}
+		opts.StableDelay = d
+	}
+	if strings.TrimSpace(cfg.PollInterval) != "" {
+		d, err := time.ParseDuration(cfg.PollInterval)
+		if err != nil {
+			return watchOptions{}, fmt.Errorf("watch poll_interval 无效: %w", err)
+		}
+		opts.PollInterval = d
+	}
+	if opts.StableDelay <= 0 {
+		return watchOptions{}, fmt.Errorf("watch stable_delay 必须大于 0")
+	}
+	if opts.PollInterval <= 0 {
+		return watchOptions{}, fmt.Errorf("watch poll_interval 必须大于 0")
+	}
+	return opts, nil
 }
 
 func isFlagChanged(cmd *cobra.Command, name string) bool {

@@ -8,8 +8,17 @@ reserve_memory_mb: 2048
 archive:
   allow_tgz_fallback: true
   embedded_7z_dir: tools
+  # Optional. Leave empty to use the OS temp directory.
+  temp_dir: ""
   # Set true to create one archive per matched video file.
   split: false
+
+watch:
+  enabled: false
+  dirs:
+    - D:/downloads/incoming
+  stable_delay: 30s
+  poll_interval: 5s
 
 thumbnail:
   enabled: true

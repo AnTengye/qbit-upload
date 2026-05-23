@@ -21,3 +21,17 @@ func TestRootCommandHasSplitFlag(t *testing.T) {
 		t.Fatalf("split flag not registered")
 	}
 }
+
+func TestRootCommandHasWatchAndInstallServiceSubcommands(t *testing.T) {
+	root := newRootCmd()
+
+	for _, name := range []string{"watch", "install-service"} {
+		cmd, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatalf("Find %s returned error: %v", name, err)
+		}
+		if cmd == root || cmd.Name() != name {
+			t.Fatalf("%s subcommand not registered", name)
+		}
+	}
+}

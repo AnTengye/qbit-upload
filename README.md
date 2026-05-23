@@ -8,7 +8,10 @@
 - Ignore files smaller than a configurable minimum size.
 - Encrypt archive content and file list with 7z password mode (`-p` + `-mhe=on`).
 - Optional split mode to create one archive per matched video file.
+- Configurable archive temp directory.
+- Watch mode for automatically processing completed large video copies.
 - Linux amd64/arm64 can use an embedded official `7zz`/`7z` under `tools/<goos>-<goarch>/`.
+- Linux systemd service installer for watch-mode autostart.
 - Fall back to an unencrypted `.tgz` archive when 7z is unavailable or fails.
 - Generate ffmpeg thumbnail contact sheets for matched videos.
 - Optional dry-run mode.
@@ -36,6 +39,12 @@ Create one archive per matched video:
 
 ```powershell
 go run . --split --config qbit-upload.example.yaml <source-dir>
+```
+
+Watch configured folders and process completed large video copies:
+
+```powershell
+go run . watch --config qbit-upload.example.yaml
 ```
 
 Generate thumbnails only, without archiving or deleting the source directory:
@@ -81,6 +90,8 @@ If you distribute an embedded 7-Zip binary with this tool, include the 7-Zip lic
 
 If 7z is unavailable or compression fails and `archive.allow_tgz_fallback` is `true`, the CLI writes an unencrypted `.tgz` archive and records the fallback in the run log at INFO level.
 
+Set `archive.temp_dir` to control where temporary archives are written before being moved to `dest_dir`. Leave it empty to use the OS temp directory.
+
 ### Archive Split Mode
 
 By default, all matched videos under the source directory are written into one archive named after the source directory, for example `MyFolder.7z`.
@@ -91,6 +102,45 @@ Use `--split` or config `archive.split: true` to create one archive per matched 
 - `nested/Movie.mkv` -> `Movie-2.7z` when another matched video already uses `Movie.7z`
 
 When tgz fallback is used, the same naming rule is used with `.tgz`.
+
+### Watch Mode
+
+Use `watch.dirs` to list incoming folders. The watcher scans those folders repeatedly and waits until a matched video file remains stable for `watch.stable_delay` before processing it.
+
+```yaml
+watch:
+  enabled: true
+  dirs:
+    - D:/downloads/incoming
+  stable_delay: 30s
+  poll_interval: 5s
+```
+
+If a large video is copied directly into the top level of a watched folder, the archive name is based on the video file name:
+
+- `D:/downloads/incoming/Movie.mp4` -> `Movie.7z`
+
+If a large video is found inside a child folder, the child folder is processed as the source directory:
+
+- `D:/downloads/incoming/Show/Season 1/Episode.mkv` -> source `Show`
+
+After a successful run, the processed file or directory is deleted, matching the normal archive flow.
+
+### Linux Service
+
+On Linux systemd hosts, install and start a watch-mode service:
+
+```bash
+sudo qbit-upload --config /etc/qbit-upload.yaml install-service
+```
+
+The generated unit runs:
+
+```bash
+qbit-upload watch --config /etc/qbit-upload.yaml
+```
+
+Use `--name` to change the service name and `--user` to run as a specific Linux user.
 
 ### Thumbnails
 
