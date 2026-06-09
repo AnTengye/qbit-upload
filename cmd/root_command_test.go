@@ -22,6 +22,14 @@ func TestRootCommandHasSplitFlag(t *testing.T) {
 	}
 }
 
+func TestRootCommandHasDeleteSourceFlag(t *testing.T) {
+	root := newRootCmd()
+
+	if flag := root.PersistentFlags().Lookup("delete-source"); flag == nil {
+		t.Fatalf("delete-source flag not registered")
+	}
+}
+
 func TestRootCommandHasWatchAndInstallServiceSubcommands(t *testing.T) {
 	root := newRootCmd()
 

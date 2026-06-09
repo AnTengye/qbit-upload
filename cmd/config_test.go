@@ -16,6 +16,7 @@ archive:
   embedded_7z_dir: bundled
   split: true
   temp_dir: /tmp/qbit-upload-work
+  delete_source: false
 thumbnail:
   enabled: false
   ffmpeg: /usr/bin/ffmpeg
@@ -53,6 +54,9 @@ watch:
 	if cfg.Archive.TempDir != "/tmp/qbit-upload-work" {
 		t.Fatalf("archive temp_dir = %q", cfg.Archive.TempDir)
 	}
+	if cfg.Archive.DeleteSource == nil || *cfg.Archive.DeleteSource {
+		t.Fatalf("archive delete_source = %#v, want false", cfg.Archive.DeleteSource)
+	}
 	if cfg.Thumbnail.Enabled == nil || *cfg.Thumbnail.Enabled {
 		t.Fatalf("thumbnail enabled = %#v, want false", cfg.Thumbnail.Enabled)
 	}
@@ -87,6 +91,58 @@ func TestResolveOptionsUsesArchiveTempDir(t *testing.T) {
 	}
 	if opts.Archive.TempDir != "/tmp/qbit-upload-work" {
 		t.Fatalf("Archive.TempDir = %q", opts.Archive.TempDir)
+	}
+}
+
+func TestResolveOptionsParsesDeleteSource(t *testing.T) {
+	// 1. Check default is true when config doesn't specify it
+	cfg := appConfig{}
+	cmd := newRootCmd()
+	opts, err := resolveOptions(cmd, cfg)
+	if err != nil {
+		t.Fatalf("resolveOptions returned error: %v", err)
+	}
+	if !opts.Archive.DeleteSource {
+		t.Fatalf("opts.Archive.DeleteSource = false, want default true")
+	}
+
+	// 2. Check config delete_source: false is respected
+	delSourceVal := false
+	cfg.Archive.DeleteSource = &delSourceVal
+	opts, err = resolveOptions(cmd, cfg)
+	if err != nil {
+		t.Fatalf("resolveOptions returned error: %v", err)
+	}
+	if opts.Archive.DeleteSource {
+		t.Fatalf("opts.Archive.DeleteSource = true, want false from config")
+	}
+
+	// 3. Check CLI flag --delete-source=true overrides config delete_source: false
+	cmd = newRootCmd()
+	if err := cmd.ParseFlags([]string{"--delete-source=true"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	opts, err = resolveOptions(cmd, cfg)
+	if err != nil {
+		t.Fatalf("resolveOptions returned error: %v", err)
+	}
+	if !opts.Archive.DeleteSource {
+		t.Fatalf("opts.Archive.DeleteSource = false, want true from CLI flag")
+	}
+
+	// 4. Check CLI flag --delete-source=false overrides config delete_source: true
+	delSourceVal = true
+	cfg.Archive.DeleteSource = &delSourceVal
+	cmd = newRootCmd()
+	if err := cmd.ParseFlags([]string{"--delete-source=false"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	opts, err = resolveOptions(cmd, cfg)
+	if err != nil {
+		t.Fatalf("resolveOptions returned error: %v", err)
+	}
+	if opts.Archive.DeleteSource {
+		t.Fatalf("opts.Archive.DeleteSource = true, want false from CLI flag")
 	}
 }
 

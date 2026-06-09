@@ -12,6 +12,8 @@ archive:
   temp_dir: ""
   # Set true to create one archive per matched video file.
   split: false
+  # Set false to keep the source video files/directory after compression.
+  delete_source: true
 
 watch:
   enabled: false

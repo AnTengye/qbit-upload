@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"io"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -96,4 +99,124 @@ func stringsRepeat(s string, count int) string {
 		out += s
 	}
 	return out
+}
+
+func TestProcessSourceDryRunRespectsDeleteSource(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "Movie.mp4"), stringsRepeat("x", 2))
+
+	// Capturing stdout to verify dry-run prints
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe error: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	opts := runOptions{
+		DestDir:   t.TempDir(),
+		MinSizeMB: 0,
+		DryRun:    true,
+	}
+	opts.Archive.DeleteSource = false
+	opts.Archive.AllowTgzFallback = true
+
+	// Call processSource with DeleteSource = false
+	if err := processSource(root, opts); err != nil {
+		t.Fatalf("processSource DryRun returned error: %v", err)
+	}
+
+	w.Close()
+	outBytes, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	output := string(outBytes)
+
+	if !strings.Contains(output, "保留源路径") {
+		t.Errorf("expected output to contain '保留源路径', got: %s", output)
+	}
+	if strings.Contains(output, "将删除源路径") {
+		t.Errorf("expected output NOT to contain '将删除源路径', got: %s", output)
+	}
+
+	// Call processSource with DeleteSource = true
+	r2, w2, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe error: %v", err)
+	}
+	os.Stdout = w2
+
+	opts.Archive.DeleteSource = true
+	if err := processSource(root, opts); err != nil {
+		t.Fatalf("processSource DryRun returned error: %v", err)
+	}
+
+	w2.Close()
+	outBytes2, err := io.ReadAll(r2)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	output2 := string(outBytes2)
+
+	if !strings.Contains(output2, "将删除源路径") {
+		t.Errorf("expected output to contain '将删除源路径', got: %s", output2)
+	}
+	if strings.Contains(output2, "保留源路径") {
+		t.Errorf("expected output NOT to contain '保留源路径', got: %s", output2)
+	}
+}
+
+func TestProcessSourceDryRunSkipsExistingSplitArchiveAndContinues(t *testing.T) {
+	root := t.TempDir()
+	mustWriteFile(t, filepath.Join(root, "Exists.mp4"), stringsRepeat("x", 2))
+	mustWriteFile(t, filepath.Join(root, "New.mp4"), stringsRepeat("x", 2))
+	dest := t.TempDir()
+	mustWriteFile(t, filepath.Join(dest, "Exists.7z"), "already archived")
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe error: %v", err)
+	}
+	os.Stdout = w
+	defer func() {
+		os.Stdout = oldStdout
+	}()
+
+	opts := runOptions{
+		DestDir:   dest,
+		MinSizeMB: 0,
+		DryRun:    true,
+	}
+	opts.Archive.AllowTgzFallback = true
+	opts.Archive.Split = true
+	opts.Archive.DeleteSource = true
+
+	if err := processSource(root, opts); err != nil {
+		t.Fatalf("processSource DryRun returned error: %v", err)
+	}
+
+	w.Close()
+	outBytes, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll error: %v", err)
+	}
+	output := string(outBytes)
+
+	if strings.Contains(output, "Exists.7z") {
+		t.Errorf("expected existing archive to be skipped from planned outputs, got: %s", output)
+	}
+	if !strings.Contains(output, "New.7z") {
+		t.Errorf("expected non-conflicting archive to remain planned, got: %s", output)
+	}
+	if strings.Contains(output, "将删除源路径") {
+		t.Errorf("expected partial split processing not to delete whole source path, got: %s", output)
+	}
+	if !strings.Contains(output, "将删除已处理视频数量: 1") {
+		t.Errorf("expected partial split processing to delete only processed videos, got: %s", output)
+	}
 }

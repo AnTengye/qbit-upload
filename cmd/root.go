@@ -38,6 +38,7 @@ var (
 	config           string
 	serviceName      string
 	serviceUser      string
+	deleteSource     bool
 )
 
 var runtimeLogOutput io.Writer = os.Stdout
@@ -74,6 +75,7 @@ func newRootCmd() *cobra.Command {
 	flags.IntVar(&thumbnailWidth, "thumbnail-width", 320, "单张缩略图宽度")
 	flags.BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除")
 	flags.StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
+	flags.BoolVar(&deleteSource, "delete-source", true, "压缩完成后是否删除源文件")
 
 	cmd.AddCommand(newThumbnailCmd())
 	cmd.AddCommand(newWatchCmd())
@@ -186,18 +188,38 @@ func processSource(sourcePath string, opts runOptions) error {
 		return err
 	}
 	stepLog("检查目标压缩包是否冲突: %d 个", len(archiveOutputs))
-	for _, out := range archiveOutputs {
-		if err := ensureOutputDoesNotExist(out.Path); err != nil {
+	skippedOutputs := []archiveOutput(nil)
+	if opts.Archive.Split {
+		var pending []archiveOutput
+		pending, skippedOutputs, err = skipExistingArchiveOutputs(archiveOutputs)
+		if err != nil {
 			return err
 		}
+		archiveOutputs = pending
+	} else {
+		for _, out := range archiveOutputs {
+			if err := ensureOutputDoesNotExist(out.Path); err != nil {
+				return err
+			}
+		}
+	}
+	if len(skippedOutputs) > 0 {
+		stepLog("跳过已存在的目标压缩包: %d 个", len(skippedOutputs))
+	}
+	pendingFiles := filesFromArchiveOutputs(archiveOutputs)
+	if len(archiveOutputs) == 0 {
+		stepLog("没有需要处理的新视频")
 	}
 
 	if opts.DryRun {
 		fmt.Printf("[dry-run] 源路径: %s\n", input.DeletePath)
 		fmt.Printf("[dry-run] 归档根目录: %s\n", input.SourceDir)
 		fmt.Printf("[dry-run] 压缩临时目录: %s\n", tempArchiveDir)
-		fmt.Printf("[dry-run] 将压缩视频数量: %d\n", len(input.Files))
-		for _, f := range input.Files {
+		if len(skippedOutputs) > 0 {
+			fmt.Printf("[dry-run] 已跳过目标压缩包存在的视频数量: %d\n", len(filesFromArchiveOutputs(skippedOutputs)))
+		}
+		fmt.Printf("[dry-run] 将压缩视频数量: %d\n", len(pendingFiles))
+		for _, f := range pendingFiles {
 			fmt.Printf("[dry-run]   - %s\n", f)
 		}
 		fmt.Printf("[dry-run] 目标压缩包数量: %d\n", len(archiveOutputs))
@@ -210,7 +232,7 @@ func processSource(sourcePath string, opts runOptions) error {
 			fmt.Printf("[dry-run] 压缩格式: tgz（未加密兜底）\n")
 		}
 		if opts.Thumbnail.Enabled {
-			thumbs, err := planThumbnailOutputs(input.SourceBase, absDest, input.Files)
+			thumbs, err := planThumbnailOutputs(input.SourceBase, absDest, pendingFiles)
 			if err != nil {
 				return err
 			}
@@ -219,19 +241,28 @@ func processSource(sourcePath string, opts runOptions) error {
 				fmt.Printf("[dry-run]   - %s\n", thumb.OutputPath)
 			}
 		}
-		fmt.Printf("[dry-run] 将删除源路径: %s\n", input.DeletePath)
+		if opts.Archive.DeleteSource {
+			if len(skippedOutputs) == 0 {
+				fmt.Printf("[dry-run] 将删除源路径: %s\n", input.DeletePath)
+			} else {
+				fmt.Printf("[dry-run] 将删除已处理视频数量: %d\n", len(pendingFiles))
+			}
+		} else {
+			fmt.Printf("[dry-run] 保留源路径: %s\n", input.DeletePath)
+		}
 		stepLog("dry-run 完成")
 		return nil
 	}
 
 	if opts.Thumbnail.Enabled {
 		stepLog("开始生成视频缩略图")
-		if err := generateThumbnails(input.SourceDir, input.SourceBase, absDest, input.Files, opts.Thumbnail); err != nil {
+		if err := generateThumbnails(input.SourceDir, input.SourceBase, absDest, pendingFiles, opts.Thumbnail); err != nil {
 			return err
 		}
 	}
 
 	finalArchives := make([]string, 0, len(archiveOutputs))
+	processedFiles := make([]string, 0, len(pendingFiles))
 	for i, out := range archiveOutputs {
 		format := plannedFormat
 		finalArchive := out.Path
@@ -280,15 +311,33 @@ func processSource(sourcePath string, opts runOptions) error {
 		}
 		moved = true
 		finalArchives = append(finalArchives, finalArchive)
+		processedFiles = append(processedFiles, out.Files...)
 	}
 
-	stepLog("删除源路径")
-	if err := os.RemoveAll(input.DeletePath); err != nil {
-		return fmt.Errorf("删除源路径失败: %w", err)
+	if opts.Archive.DeleteSource {
+		if len(skippedOutputs) == 0 {
+			stepLog("删除源路径")
+			if err := os.RemoveAll(input.DeletePath); err != nil {
+				return fmt.Errorf("删除源路径失败: %w", err)
+			}
+		} else {
+			stepLog("删除已处理视频文件: %d 个", len(processedFiles))
+			for _, rel := range processedFiles {
+				path := filepath.Join(input.SourceDir, rel)
+				if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+					return fmt.Errorf("删除已处理视频失败 %s: %w", path, err)
+				}
+			}
+		}
+	} else {
+		stepLog("保留源路径")
 	}
 
 	stepLog("任务完成")
-	fmt.Printf("已完成: %d 个视频 -> %d 个压缩包\n", len(input.Files), len(finalArchives))
+	fmt.Printf("已完成: %d 个视频 -> %d 个压缩包\n", len(processedFiles), len(finalArchives))
+	if len(skippedOutputs) > 0 {
+		fmt.Printf("已跳过: %d 个已存在目标压缩包的视频\n", len(filesFromArchiveOutputs(skippedOutputs)))
+	}
 	for _, finalArchive := range finalArchives {
 		fmt.Printf("  - %s\n", finalArchive)
 	}
@@ -479,6 +528,7 @@ type archiveConfig struct {
 	Embedded7zDir    string `json:"embedded_7z_dir" yaml:"embedded_7z_dir"`
 	Split            *bool  `json:"split" yaml:"split"`
 	TempDir          string `json:"temp_dir" yaml:"temp_dir"`
+	DeleteSource     *bool  `json:"delete_source" yaml:"delete_source"`
 }
 
 type watchConfig struct {
@@ -509,6 +559,7 @@ type archiveOptions struct {
 	Embedded7zDir    string
 	Split            bool
 	TempDir          string
+	DeleteSource     bool
 }
 
 type watchOptions struct {
@@ -571,9 +622,16 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	archive := archiveOptions{
 		AllowTgzFallback: true,
 		Embedded7zDir:    "tools",
+		DeleteSource:     true,
 	}
 	if cfg.Archive.AllowTgzFallback != nil {
 		archive.AllowTgzFallback = *cfg.Archive.AllowTgzFallback
+	}
+	if cfg.Archive.DeleteSource != nil {
+		archive.DeleteSource = *cfg.Archive.DeleteSource
+	}
+	if isFlagChanged(cmd, "delete-source") {
+		archive.DeleteSource = deleteSource
 	}
 	if strings.TrimSpace(cfg.Archive.Embedded7zDir) != "" {
 		archive.Embedded7zDir = cfg.Archive.Embedded7zDir
@@ -889,6 +947,28 @@ func ensureOutputDoesNotExist(path string) error {
 		return fmt.Errorf("检查目标文件失败: %w", err)
 	}
 	return nil
+}
+
+func skipExistingArchiveOutputs(outputs []archiveOutput) (pending, skipped []archiveOutput, err error) {
+	for _, out := range outputs {
+		if _, statErr := os.Stat(out.Path); statErr == nil {
+			stepLog("WARN: 目标目录已存在同名文件，跳过: %s", out.Path)
+			skipped = append(skipped, out)
+		} else if errors.Is(statErr, os.ErrNotExist) {
+			pending = append(pending, out)
+		} else {
+			return nil, nil, fmt.Errorf("检查目标文件失败: %w", statErr)
+		}
+	}
+	return pending, skipped, nil
+}
+
+func filesFromArchiveOutputs(outputs []archiveOutput) []string {
+	files := make([]string, 0, len(outputs))
+	for _, out := range outputs {
+		files = append(files, out.Files...)
+	}
+	return files
 }
 
 func moveFile(src, dst string) error {
