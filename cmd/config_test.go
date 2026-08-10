@@ -24,6 +24,11 @@ thumbnail:
   columns: 3
   rows: 8
   width: 240
+report:
+  enabled: false
+  url: https://film.example.test/api/external/films
+  api_key: test-key
+  timeout: 5s
 watch:
   enabled: true
   dirs:
@@ -66,6 +71,12 @@ watch:
 	if cfg.Thumbnail.Columns != 3 || cfg.Thumbnail.Rows != 8 || cfg.Thumbnail.Width != 240 {
 		t.Fatalf("thumbnail grid = %#v", cfg.Thumbnail)
 	}
+	if cfg.Report.Enabled == nil || *cfg.Report.Enabled {
+		t.Fatalf("report enabled = %#v, want false", cfg.Report.Enabled)
+	}
+	if cfg.Report.URL != "https://film.example.test/api/external/films" || cfg.Report.APIKey != "test-key" || cfg.Report.Timeout != "5s" {
+		t.Fatalf("report config = %#v", cfg.Report)
+	}
 	if cfg.Watch.Enabled == nil || !*cfg.Watch.Enabled {
 		t.Fatalf("watch enabled = %#v, want true", cfg.Watch.Enabled)
 	}
@@ -74,6 +85,31 @@ watch:
 	}
 	if cfg.Watch.StableDelay != "2s" {
 		t.Fatalf("watch stable_delay = %q", cfg.Watch.StableDelay)
+	}
+}
+
+func TestResolveOptionsReportDefaultsAndCLIOverride(t *testing.T) {
+	t.Setenv("QBIT_UPLOAD_REPORT_API_KEY", "")
+	t.Setenv("AVISTER_FILM_EXTERNAL_API_KEY", "")
+
+	opts, err := resolveOptions(newRootCmd(), appConfig{})
+	if err != nil {
+		t.Fatalf("resolveOptions returned error: %v", err)
+	}
+	if !opts.Report.Enabled || opts.Report.URL != defaultReportURL {
+		t.Fatalf("default report options = %#v", opts.Report)
+	}
+
+	cmd := newRootCmd()
+	if err := cmd.ParseFlags([]string{"--report=false"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	opts, err = resolveOptions(cmd, appConfig{})
+	if err != nil {
+		t.Fatalf("resolveOptions returned error: %v", err)
+	}
+	if opts.Report.Enabled {
+		t.Fatal("Report.Enabled = true, want false from CLI")
 	}
 }
 

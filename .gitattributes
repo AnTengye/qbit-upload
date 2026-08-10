@@ -1,0 +1,6 @@
+# Keep repository text files consistent across macOS, Linux, and Windows.
+* text=auto eol=lf
+
+# Windows command scripts require CRLF when checked out.
+*.bat text eol=crlf
+*.cmd text eol=crlf

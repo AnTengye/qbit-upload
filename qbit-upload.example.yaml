@@ -14,6 +14,8 @@ archive:
   split: false
   # Set false to keep the source video files/directory after compression.
   delete_source: true
+  # Optional. Dedicated output directory for archives. Defaults to dest_dir.
+  dest_dir: ""
 
 watch:
   enabled: false
@@ -29,6 +31,16 @@ thumbnail:
   columns: 4
   rows: 15
   width: 320
+  # Optional. Dedicated output directory for thumbnails. Defaults to dest_dir.
+  dest_dir: ""
+
+# Enabled by default. Reports the normalized catalog number and generated preview.
+report:
+  enabled: true
+  url: http://89.116.88.182:8081/api/external/films
+  timeout: 30s
+  # Prefer QBIT_UPLOAD_REPORT_API_KEY instead of storing the key in this file.
+  # api_key: ""
 
 log:
   path: logs

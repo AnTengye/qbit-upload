@@ -176,6 +176,7 @@ func TestProcessSourceDryRunSkipsExistingSplitArchiveAndContinues(t *testing.T) 
 	mustWriteFile(t, filepath.Join(root, "New.mp4"), stringsRepeat("x", 2))
 	dest := t.TempDir()
 	mustWriteFile(t, filepath.Join(dest, "Exists.7z"), "already archived")
+	mustWriteFile(t, filepath.Join(dest, "Exists.tgz"), "already archived")
 
 	oldStdout := os.Stdout
 	r, w, err := os.Pipe()
@@ -207,10 +208,10 @@ func TestProcessSourceDryRunSkipsExistingSplitArchiveAndContinues(t *testing.T) 
 	}
 	output := string(outBytes)
 
-	if strings.Contains(output, "Exists.7z") {
+	if strings.Contains(output, "Exists.7z") || strings.Contains(output, "Exists.tgz") {
 		t.Errorf("expected existing archive to be skipped from planned outputs, got: %s", output)
 	}
-	if !strings.Contains(output, "New.7z") {
+	if !strings.Contains(output, "New.7z") && !strings.Contains(output, "New.tgz") {
 		t.Errorf("expected non-conflicting archive to remain planned, got: %s", output)
 	}
 	if strings.Contains(output, "将删除源路径") {
@@ -218,5 +219,96 @@ func TestProcessSourceDryRunSkipsExistingSplitArchiveAndContinues(t *testing.T) 
 	}
 	if !strings.Contains(output, "将删除已处理视频数量: 1") {
 		t.Errorf("expected partial split processing to delete only processed videos, got: %s", output)
+	}
+}
+
+func TestCleanupInterruptedArtifacts(t *testing.T) {
+	tempArchiveDir := t.TempDir()
+	thumbDestDir := t.TempDir()
+
+	// 模拟需要压缩的任务：一个单文件任务 Movie
+	archiveOutputs := []archiveOutput{
+		{
+			Path:  filepath.Join(t.TempDir(), "Movie.7z"),
+			Files: []string{"Movie.mp4"},
+		},
+	}
+
+	// 模拟残留的临时压缩包
+	// 合法的临时包格式，应该被清理
+	validTempArchive := filepath.Join(tempArchiveDir, "Movie_171987654321_0.7z")
+	mustWriteFile(t, validTempArchive, "temp-7z-data")
+
+	// 无关的临时文件，不应该被清理
+	unrelatedTempFile := filepath.Join(tempArchiveDir, "Movie_notanumber_0.7z")
+	mustWriteFile(t, unrelatedTempFile, "other-data")
+
+	// 模拟残留的缩略图
+	// 规划缩略图路径 (sourceBase = "source", files = ["Movie.mp4"]) -> "source-Movie-thumbnail.jpg"
+	staleThumb := filepath.Join(thumbDestDir, "source-Movie-thumbnail.jpg")
+	mustWriteFile(t, staleThumb, "jpeg-data")
+
+	// 执行清理
+	thumbOpts := thumbnailOptions{
+		Enabled: true,
+		DestDir: thumbDestDir,
+	}
+	cleanupInterruptedArtifacts(tempArchiveDir, archiveOutputs, archiveFormat7z, thumbOpts, "source", []string{"Movie.mp4"})
+
+	// 验证：合法的临时压缩包应该被删除
+	if _, err := os.Stat(validTempArchive); !os.IsNotExist(err) {
+		t.Errorf("expected valid temp archive %s to be deleted, but it exists", validTempArchive)
+	}
+
+	// 验证：无关的文件不应该被删除
+	if _, err := os.Stat(unrelatedTempFile); err != nil {
+		t.Errorf("expected unrelated file %s to be preserved, but it was deleted or error: %v", unrelatedTempFile, err)
+	}
+
+	// 验证：残留的缩略图应该被删除
+	if _, err := os.Stat(staleThumb); !os.IsNotExist(err) {
+		t.Errorf("expected stale thumbnail %s to be deleted, but it exists", staleThumb)
+	}
+}
+
+func TestSeparateDestDirConfiguration(t *testing.T) {
+	// 测试当配置了专属目标目录时，resolveOptions 是否能正确处理
+	// 我们模拟一个 CLI command 和 appConfig
+	cmd := newRootCmd()
+
+	// 测试场景 1：仅配置全局 dest_dir
+	cfg1 := appConfig{
+		DestDir: "/global/dest",
+	}
+	opts1, err := resolveOptions(cmd, cfg1)
+	if err != nil {
+		t.Fatalf("resolveOptions failed: %v", err)
+	}
+	if opts1.Archive.DestDir != "/global/dest" {
+		t.Errorf("opts1.Archive.DestDir = %q, want %q", opts1.Archive.DestDir, "/global/dest")
+	}
+	if opts1.Thumbnail.DestDir != "/global/dest" {
+		t.Errorf("opts1.Thumbnail.DestDir = %q, want %q", opts1.Thumbnail.DestDir, "/global/dest")
+	}
+
+	// 测试场景 2：配置文件中单独配置了专属目录
+	cfg2 := appConfig{
+		DestDir: "/global/dest",
+		Archive: archiveConfig{
+			DestDir: "/archive/dest",
+		},
+		Thumbnail: thumbnailConfig{
+			DestDir: "/thumb/dest",
+		},
+	}
+	opts2, err := resolveOptions(cmd, cfg2)
+	if err != nil {
+		t.Fatalf("resolveOptions failed: %v", err)
+	}
+	if opts2.Archive.DestDir != "/archive/dest" {
+		t.Errorf("opts2.Archive.DestDir = %q, want %q", opts2.Archive.DestDir, "/archive/dest")
+	}
+	if opts2.Thumbnail.DestDir != "/thumb/dest" {
+		t.Errorf("opts2.Thumbnail.DestDir = %q, want %q", opts2.Thumbnail.DestDir, "/thumb/dest")
 	}
 }

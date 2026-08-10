@@ -14,6 +14,7 @@
 - Linux systemd service installer for watch-mode autostart.
 - Fall back to an unencrypted `.tgz` archive when 7z is unavailable or fails.
 - Generate ffmpeg thumbnail contact sheets for matched videos.
+- Normalize movie catalog numbers and asynchronously report each completed film with its preview image.
 - Optional dry-run mode.
 - Per-run timestamped logs written to a log directory.
 
@@ -76,6 +77,8 @@ Supported config names for auto-discovery (same directory as executable):
 - `qbit-upload.json`
 
 CLI flags override config values.
+
+Catalog-number preprocessing and film reporting are enabled in the normal archive flow. Reporting defaults to the Avister Film external endpoint; configure the API key through `QBIT_UPLOAD_REPORT_API_KEY` and use `--report=false` only when reporting must be disabled. See [Catalog Number Preprocessing and Film Reporting](docs/catalog-number-reporting.md) for the complete rules, examples, configuration, and failure behavior.
 
 ### Linux 7z and tgz fallback
 

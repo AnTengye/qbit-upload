@@ -30,6 +30,17 @@ func TestRootCommandHasDeleteSourceFlag(t *testing.T) {
 	}
 }
 
+func TestRootCommandReportFlagDefaultsToEnabled(t *testing.T) {
+	root := newRootCmd()
+	flag := root.PersistentFlags().Lookup("report")
+	if flag == nil {
+		t.Fatal("report flag not registered")
+	}
+	if flag.DefValue != "true" {
+		t.Fatalf("report default = %q, want true", flag.DefValue)
+	}
+}
+
 func TestRootCommandHasWatchAndInstallServiceSubcommands(t *testing.T) {
 	root := newRootCmd()
 

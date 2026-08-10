@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -39,6 +40,12 @@ var (
 	serviceName      string
 	serviceUser      string
 	deleteSource     bool
+	archiveDestDir   string
+	thumbnailDestDir string
+	reportEnabled    bool
+	reportURL        string
+	reportAPIKey     string
+	reportTimeout    string
 )
 
 var runtimeLogOutput io.Writer = os.Stdout
@@ -76,6 +83,12 @@ func newRootCmd() *cobra.Command {
 	flags.BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除")
 	flags.StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
 	flags.BoolVar(&deleteSource, "delete-source", true, "压缩完成后是否删除源文件")
+	flags.StringVar(&archiveDestDir, "archive-dest", "", "压缩包专属输出目录（可选，默认使用 -d/--dest）")
+	flags.StringVar(&thumbnailDestDir, "thumbnail-dest", "", "视频缩略图专属输出目录（可选，默认使用 -d/--dest）")
+	flags.BoolVar(&reportEnabled, "report", true, "影片打包完成后异步上报番号和预览图")
+	flags.StringVar(&reportURL, "report-url", defaultReportURL, "影片上报接口地址")
+	flags.StringVar(&reportAPIKey, "report-api-key", "", "影片上报 API Key（推荐使用环境变量）")
+	flags.StringVar(&reportTimeout, "report-timeout", defaultReportTimeout.String(), "单次影片上报超时时间")
 
 	cmd.AddCommand(newThumbnailCmd())
 	cmd.AddCommand(newWatchCmd())
@@ -151,14 +164,34 @@ func processSource(sourcePath string, opts runOptions) error {
 	}
 	stepLog("扫描完成，命中视频文件: %d 个", len(input.Files))
 
-	stepLog("解析目标目录: %s", opts.DestDir)
-	absDest, err := filepath.Abs(opts.DestDir)
-	if err != nil {
-		return fmt.Errorf("解析目标目录失败: %w", err)
+	archiveDest := opts.Archive.DestDir
+	if strings.TrimSpace(archiveDest) == "" {
+		archiveDest = opts.DestDir
 	}
-	stepLog("确保目标目录存在")
-	if err := os.MkdirAll(absDest, 0o755); err != nil {
-		return fmt.Errorf("创建目标目录失败: %w", err)
+	absArchiveDest, err := filepath.Abs(archiveDest)
+	if err != nil {
+		return fmt.Errorf("解析压缩包输出目录失败: %w", err)
+	}
+
+	thumbDest := opts.Thumbnail.DestDir
+	if strings.TrimSpace(thumbDest) == "" {
+		thumbDest = opts.DestDir
+	}
+	absThumbDest, err := filepath.Abs(thumbDest)
+	if err != nil {
+		return fmt.Errorf("解析缩略图输出目录失败: %w", err)
+	}
+
+	stepLog("确保压缩包输出目录存在: %s", absArchiveDest)
+	if err := os.MkdirAll(absArchiveDest, 0o755); err != nil {
+		return fmt.Errorf("创建压缩包输出目录失败: %w", err)
+	}
+
+	if opts.Thumbnail.Enabled {
+		stepLog("确保缩略图输出目录存在: %s", absThumbDest)
+		if err := os.MkdirAll(absThumbDest, 0o755); err != nil {
+			return fmt.Errorf("创建缩略图输出目录失败: %w", err)
+		}
 	}
 
 	tempArchiveDir, err := resolveArchiveTempDir(opts.Archive.TempDir)
@@ -183,7 +216,7 @@ func processSource(sourcePath string, opts runOptions) error {
 		stepLog("INFO: 7z 不可用，将使用未加密 tgz 兜底: %v", sevenZipErr)
 	}
 
-	archiveOutputs, err := planArchiveOutputs(input.SourceBase, absDest, input.Files, plannedFormat, opts.Archive.Split)
+	archiveOutputs, err := planArchiveOutputs(input.SourceBase, absArchiveDest, input.Files, plannedFormat, opts.Archive.Split)
 	if err != nil {
 		return err
 	}
@@ -211,6 +244,17 @@ func processSource(sourcePath string, opts runOptions) error {
 		stepLog("没有需要处理的新视频")
 	}
 
+	var reportTracker *filmReportTracker
+	if opts.Report.Enabled {
+		reportTracker, err = newFilmReportTracker(input.SourceBase, absThumbDest, pendingFiles, opts.Thumbnail.Enabled)
+		if err != nil {
+			return fmt.Errorf("规划影片上报失败: %w", err)
+		}
+		for _, rel := range reportTracker.Unmatched() {
+			stepLog("WARN: 未从文件名识别到番号，将不进行影片上报: %s", rel)
+		}
+	}
+
 	if opts.DryRun {
 		fmt.Printf("[dry-run] 源路径: %s\n", input.DeletePath)
 		fmt.Printf("[dry-run] 归档根目录: %s\n", input.SourceDir)
@@ -232,7 +276,7 @@ func processSource(sourcePath string, opts runOptions) error {
 			fmt.Printf("[dry-run] 压缩格式: tgz（未加密兜底）\n")
 		}
 		if opts.Thumbnail.Enabled {
-			thumbs, err := planThumbnailOutputs(input.SourceBase, absDest, pendingFiles)
+			thumbs, err := planThumbnailOutputs(input.SourceBase, absThumbDest, pendingFiles)
 			if err != nil {
 				return err
 			}
@@ -240,6 +284,22 @@ func processSource(sourcePath string, opts runOptions) error {
 			for _, thumb := range thumbs {
 				fmt.Printf("[dry-run]   - %s\n", thumb.OutputPath)
 			}
+		}
+		if opts.Report.Enabled {
+			plans := reportTracker.Plans()
+			fmt.Printf("[dry-run] 将异步上报影片数量: %d\n", len(plans))
+			for _, plan := range plans {
+				if plan.PreviewPath == "" {
+					fmt.Printf("[dry-run]   - %s（仅番号，无预览图）\n", plan.Code)
+					continue
+				}
+				fmt.Printf("[dry-run]   - %s + %s\n", plan.Code, plan.PreviewPath)
+			}
+			if strings.TrimSpace(opts.Report.APIKey) == "" && len(plans) > 0 {
+				fmt.Printf("[dry-run] WARN: 未配置上报 API Key，实际运行时会跳过上报\n")
+			}
+		} else {
+			fmt.Printf("[dry-run] 影片上报已禁用\n")
 		}
 		if opts.Archive.DeleteSource {
 			if len(skippedOutputs) == 0 {
@@ -254,12 +314,20 @@ func processSource(sourcePath string, opts runOptions) error {
 		return nil
 	}
 
+	thumbOpts := opts.Thumbnail
+	thumbOpts.DestDir = absThumbDest
+	cleanupInterruptedArtifacts(tempArchiveDir, archiveOutputs, plannedFormat, thumbOpts, input.SourceBase, pendingFiles)
+
 	if opts.Thumbnail.Enabled {
 		stepLog("开始生成视频缩略图")
-		if err := generateThumbnails(input.SourceDir, input.SourceBase, absDest, pendingFiles, opts.Thumbnail); err != nil {
+		if err := generateThumbnails(input.SourceDir, input.SourceBase, absThumbDest, pendingFiles, opts.Thumbnail); err != nil {
 			return err
 		}
 	}
+
+	reporter := newFilmReporter(opts.Report)
+	defer reporter.Wait()
+	queuedReports := 0
 
 	finalArchives := make([]string, 0, len(archiveOutputs))
 	processedFiles := make([]string, 0, len(pendingFiles))
@@ -312,6 +380,19 @@ func processSource(sourcePath string, opts runOptions) error {
 		moved = true
 		finalArchives = append(finalArchives, finalArchive)
 		processedFiles = append(processedFiles, out.Files...)
+		if reportTracker != nil {
+			for _, plan := range reportTracker.Complete(out.Files) {
+				stepLog("番号 %s 的影片已全部打包，准备异步上报", plan.Code)
+				if reporter.Queue(plan.Code, plan.PreviewPath) {
+					queuedReports++
+				}
+			}
+		}
+	}
+
+	if queuedReports > 0 {
+		stepLog("等待异步影片上报完成: %d 个", queuedReports)
+		reporter.Wait()
 	}
 
 	if opts.Archive.DeleteSource {
@@ -488,14 +569,10 @@ func prepareVideoInputs(sourceDir string, opts runOptions) (absSource, absDest s
 		return "", "", nil, fmt.Errorf("不是目录: %s", absSource)
 	}
 
-	stepLog("解析目标目录: %s", opts.DestDir)
-	absDest, err = filepath.Abs(opts.DestDir)
-	if err != nil {
-		return "", "", nil, fmt.Errorf("解析目标目录失败: %w", err)
-	}
-	stepLog("确保目标目录存在")
+	stepLog("确保缩略图输出目录存在: %s", opts.Thumbnail.DestDir)
+	absDest = opts.Thumbnail.DestDir
 	if err := os.MkdirAll(absDest, 0o755); err != nil {
-		return "", "", nil, fmt.Errorf("创建目标目录失败: %w", err)
+		return "", "", nil, fmt.Errorf("创建缩略图输出目录失败: %w", err)
 	}
 
 	stepLog("扫描视频文件（最小大小: %dMB）", opts.MinSizeMB)
@@ -519,6 +596,7 @@ type appConfig struct {
 	ReserveMemoryMB int64           `json:"reserve_memory_mb" yaml:"reserve_memory_mb"`
 	Archive         archiveConfig   `json:"archive" yaml:"archive"`
 	Thumbnail       thumbnailConfig `json:"thumbnail" yaml:"thumbnail"`
+	Report          reportConfig    `json:"report" yaml:"report"`
 	Watch           watchConfig     `json:"watch" yaml:"watch"`
 	Log             logConfig       `json:"log" yaml:"log"`
 }
@@ -529,6 +607,7 @@ type archiveConfig struct {
 	Split            *bool  `json:"split" yaml:"split"`
 	TempDir          string `json:"temp_dir" yaml:"temp_dir"`
 	DeleteSource     *bool  `json:"delete_source" yaml:"delete_source"`
+	DestDir          string `json:"dest_dir" yaml:"dest_dir"`
 }
 
 type watchConfig struct {
@@ -551,6 +630,7 @@ type runOptions struct {
 	ReserveMemoryMB int64
 	Archive         archiveOptions
 	Thumbnail       thumbnailOptions
+	Report          reportOptions
 	DryRun          bool
 }
 
@@ -560,6 +640,7 @@ type archiveOptions struct {
 	Split            bool
 	TempDir          string
 	DeleteSource     bool
+	DestDir          string
 }
 
 type watchOptions struct {
@@ -619,10 +700,23 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		return runOptions{}, fmt.Errorf("min-size-mb 必须大于 0")
 	}
 
+	archiveDest := cfg.Archive.DestDir
+	if isFlagChanged(cmd, "archive-dest") {
+		archiveDest = archiveDestDir
+	}
+	if strings.TrimSpace(archiveDest) == "" {
+		archiveDest = dest
+	}
+	absArchiveDest, err := filepath.Abs(archiveDest)
+	if err != nil {
+		return runOptions{}, fmt.Errorf("解析压缩包输出目录失败: %w", err)
+	}
+
 	archive := archiveOptions{
 		AllowTgzFallback: true,
 		Embedded7zDir:    "tools",
 		DeleteSource:     true,
+		DestDir:          absArchiveDest,
 	}
 	if cfg.Archive.AllowTgzFallback != nil {
 		archive.AllowTgzFallback = *cfg.Archive.AllowTgzFallback
@@ -674,7 +768,37 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	if isFlagChanged(cmd, "thumbnail-width") {
 		thumbCfg.Width = thumbnailWidth
 	}
+	thumbDest := cfg.Thumbnail.DestDir
+	if isFlagChanged(cmd, "thumbnail-dest") {
+		thumbDest = thumbnailDestDir
+	}
+	if strings.TrimSpace(thumbDest) == "" {
+		thumbDest = dest
+	}
+	absThumbDest, err := filepath.Abs(thumbDest)
+	if err != nil {
+		return runOptions{}, fmt.Errorf("解析缩略图输出目录失败: %w", err)
+	}
+	thumbCfg.DestDir = absThumbDest
 	thumb, err := resolveThumbnailOptions(thumbCfg)
+	if err != nil {
+		return runOptions{}, err
+	}
+
+	reportCfg := cfg.Report
+	if isFlagChanged(cmd, "report") {
+		reportCfg.Enabled = &reportEnabled
+	}
+	if isFlagChanged(cmd, "report-url") {
+		reportCfg.URL = reportURL
+	}
+	if isFlagChanged(cmd, "report-api-key") {
+		reportCfg.APIKey = reportAPIKey
+	}
+	if isFlagChanged(cmd, "report-timeout") {
+		reportCfg.Timeout = reportTimeout
+	}
+	report, err := resolveReportOptions(reportCfg)
 	if err != nil {
 		return runOptions{}, err
 	}
@@ -687,6 +811,7 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		ReserveMemoryMB: reserveMB,
 		Archive:         archive,
 		Thumbnail:       thumb,
+		Report:          report,
 		DryRun:          dryRun,
 	}, nil
 }
@@ -1035,4 +1160,55 @@ var videoExts = map[string]struct{}{
 	".vob":  {},
 	".webm": {},
 	".wmv":  {},
+}
+
+func cleanupInterruptedArtifacts(tempArchiveDir string, archiveOutputs []archiveOutput, format archiveFormat, thumbnailOpts thumbnailOptions, sourceBase string, pendingFiles []string) {
+	stepLog("检查并清理上一次可能中断的任务残留产物...")
+
+	// 1. 清理可能残留的临时压缩包
+	namesToCleanup := make(map[string]struct{})
+	for _, out := range archiveOutputs {
+		name := strings.TrimSuffix(filepath.Base(out.Path), filepath.Ext(out.Path))
+		namesToCleanup[name] = struct{}{}
+	}
+
+	files, err := os.ReadDir(tempArchiveDir)
+	if err == nil {
+		for _, entry := range files {
+			if entry.IsDir() {
+				continue
+			}
+			fileName := entry.Name()
+			for name := range namesToCleanup {
+				prefix := name + "_"
+				suffix := "." + string(format)
+				if strings.HasPrefix(fileName, prefix) && strings.HasSuffix(fileName, suffix) {
+					middle := fileName[len(prefix) : len(fileName)-len(suffix)]
+					parts := strings.Split(middle, "_")
+					if len(parts) == 2 {
+						_, err1 := strconv.ParseInt(parts[0], 10, 64)
+						_, err2 := strconv.ParseInt(parts[1], 10, 64)
+						if err1 == nil && err2 == nil {
+							pathToDelete := filepath.Join(tempArchiveDir, fileName)
+							stepLog("清理残留临时压缩包: %s", pathToDelete)
+							_ = os.Remove(pathToDelete)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 2. 清理可能残留的缩略图
+	if thumbnailOpts.Enabled && len(pendingFiles) > 0 {
+		thumbOutputs, err := planThumbnailOutputs(sourceBase, thumbnailOpts.DestDir, pendingFiles)
+		if err == nil {
+			for _, out := range thumbOutputs {
+				if _, err := os.Stat(out.OutputPath); err == nil {
+					stepLog("清理残留缩略图: %s", out.OutputPath)
+					_ = os.Remove(out.OutputPath)
+				}
+			}
+		}
+	}
 }

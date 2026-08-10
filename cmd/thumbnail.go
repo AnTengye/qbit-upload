@@ -23,6 +23,7 @@ type thumbnailConfig struct {
 	Columns int    `json:"columns" yaml:"columns"`
 	Rows    int    `json:"rows" yaml:"rows"`
 	Width   int    `json:"width" yaml:"width"`
+	DestDir string `json:"dest_dir" yaml:"dest_dir"`
 }
 
 type thumbnailOptions struct {
@@ -32,6 +33,7 @@ type thumbnailOptions struct {
 	Columns int
 	Rows    int
 	Width   int
+	DestDir string
 }
 
 type thumbnailOutput struct {
@@ -48,6 +50,7 @@ func resolveThumbnailOptions(cfg thumbnailConfig) (thumbnailOptions, error) {
 		Columns: 4,
 		Rows:    15,
 		Width:   320,
+		DestDir: cfg.DestDir,
 	}
 	if cfg.Enabled != nil {
 		opts.Enabled = *cfg.Enabled
