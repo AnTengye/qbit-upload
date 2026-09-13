@@ -107,6 +107,7 @@ func TestFilmReporterPreprocessesCodeAndUploadsPreview(t *testing.T) {
 }
 
 func TestFilmReporterTreatsConflictAsSuccess(t *testing.T) {
+	previewPath := writeTestJPEG(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 	}))
@@ -118,10 +119,69 @@ func TestFilmReporterTreatsConflictAsSuccess(t *testing.T) {
 		APIKey:  "test-api-key",
 		Timeout: 2 * time.Second,
 	})
-	if !reporter.Queue("ABC-123.mp4", "") {
+	if !reporter.Queue("ABC-123.mp4", previewPath) {
 		t.Fatal("Queue returned false")
 	}
 	reporter.Wait()
+	if _, err := os.Stat(previewPath); err != nil {
+		t.Fatalf("preview should be preserved for conflict response: %v", err)
+	}
+}
+
+func TestFilmReporterDeletesPreviewAfterSuccessfulUpload(t *testing.T) {
+	previewPath := writeTestJPEG(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(maxReportPreviewSize); err != nil {
+			t.Errorf("ParseMultipartForm: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, _, err := r.FormFile("previewFile"); err != nil {
+			t.Errorf("FormFile(previewFile): %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	reporter := newFilmReporter(reportOptions{
+		Enabled: true,
+		URL:     server.URL,
+		APIKey:  "test-api-key",
+		Timeout: 2 * time.Second,
+	})
+	if !reporter.Queue("ABC-123.mp4", previewPath) {
+		t.Fatal("Queue returned false")
+	}
+	reporter.Wait()
+
+	if _, err := os.Stat(previewPath); !os.IsNotExist(err) {
+		t.Fatalf("preview should be deleted after successful upload, stat error: %v", err)
+	}
+}
+
+func TestFilmReporterPreservesPreviewAfterFailedUpload(t *testing.T) {
+	previewPath := writeTestJPEG(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	reporter := newFilmReporter(reportOptions{
+		Enabled: true,
+		URL:     server.URL,
+		APIKey:  "test-api-key",
+		Timeout: 2 * time.Second,
+	})
+	if !reporter.Queue("ABC-124.mp4", previewPath) {
+		t.Fatal("Queue returned false")
+	}
+	reporter.Wait()
+
+	if _, err := os.Stat(previewPath); err != nil {
+		t.Fatalf("preview should be preserved after failed upload: %v", err)
+	}
 }
 
 func TestFilmReportTrackerWaitsForAllParts(t *testing.T) {

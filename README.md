@@ -80,6 +80,8 @@ CLI flags override config values.
 
 Catalog-number preprocessing and film reporting are enabled in the normal archive flow. Reporting defaults to the Avister Film external endpoint; configure the API key through `QBIT_UPLOAD_REPORT_API_KEY` and use `--report=false` only when reporting must be disabled. See [Catalog Number Preprocessing and Film Reporting](docs/catalog-number-reporting.md) for the complete rules, examples, configuration, and failure behavior.
 
+When a generated thumbnail is included in a report and the Film API returns `201 Created`, the local thumbnail is deleted after the report completes. Failed reports, `409 Conflict`, and number-only reports keep the local thumbnail.
+
 ### Linux 7z and tgz fallback
 
 When `seven_zip` / `--7z` is not set, the CLI looks for embedded tools before checking `PATH`. On non-Windows systems it prefers `7zz`, because current official 7-Zip Linux releases use the new Linux console version and the older p7zip port is no longer recommended by 7-Zip upstream.

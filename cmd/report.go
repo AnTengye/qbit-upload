@@ -284,6 +284,13 @@ func (r *filmReporter) Queue(rawCode, previewPath string) bool {
 			stepLog("影片上报完成（已存在）: %s", code)
 			return
 		}
+		if payload.Preview != nil {
+			if err := removeReportedPreview(previewPath); err != nil {
+				stepLog("WARN: 番号 %s 已上报成功，但删除本地缩略图失败: %v", code, err)
+			} else {
+				stepLog("缩略图上报成功，已删除本地缩略图: %s", previewPath)
+			}
+		}
 		stepLog("影片异步上报完成: %s", code)
 	}()
 	return true
@@ -369,6 +376,16 @@ func loadReportPreview(previewPath string) (*reportPreview, error) {
 		ContentType: contentType,
 		Data:        data,
 	}, nil
+}
+
+func removeReportedPreview(previewPath string) error {
+	if strings.TrimSpace(previewPath) == "" {
+		return nil
+	}
+	if err := os.Remove(previewPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除缩略图 %s: %w", previewPath, err)
+	}
+	return nil
 }
 
 func isReportImageType(contentType string) bool {
