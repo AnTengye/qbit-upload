@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -218,12 +219,15 @@ func TestProcessSourceReportsAfterArchiveCompletes(t *testing.T) {
 
 	reported := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseMultipartForm(maxReportPreviewSize); err != nil {
-			t.Errorf("ParseMultipartForm: %v", err)
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("Decode JSON: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		reported <- r.FormValue("code")
+		reported <- payload.Code
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer server.Close()

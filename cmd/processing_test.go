@@ -275,40 +275,43 @@ func TestSeparateDestDirConfiguration(t *testing.T) {
 	// 测试当配置了专属目标目录时，resolveOptions 是否能正确处理
 	// 我们模拟一个 CLI command 和 appConfig
 	cmd := newRootCmd()
+	globalDest := filepath.Join(t.TempDir(), "global")
+	archiveDest := filepath.Join(t.TempDir(), "archives")
+	thumbDest := filepath.Join(t.TempDir(), "thumbs")
 
 	// 测试场景 1：仅配置全局 dest_dir
 	cfg1 := appConfig{
-		DestDir: "/global/dest",
+		DestDir: globalDest,
 	}
 	opts1, err := resolveOptions(cmd, cfg1)
 	if err != nil {
 		t.Fatalf("resolveOptions failed: %v", err)
 	}
-	if opts1.Archive.DestDir != "/global/dest" {
-		t.Errorf("opts1.Archive.DestDir = %q, want %q", opts1.Archive.DestDir, "/global/dest")
+	if opts1.Archive.DestDir != globalDest {
+		t.Errorf("opts1.Archive.DestDir = %q, want %q", opts1.Archive.DestDir, globalDest)
 	}
-	if opts1.Thumbnail.DestDir != "/global/dest" {
-		t.Errorf("opts1.Thumbnail.DestDir = %q, want %q", opts1.Thumbnail.DestDir, "/global/dest")
+	if opts1.Thumbnail.DestDir != globalDest {
+		t.Errorf("opts1.Thumbnail.DestDir = %q, want %q", opts1.Thumbnail.DestDir, globalDest)
 	}
 
 	// 测试场景 2：配置文件中单独配置了专属目录
 	cfg2 := appConfig{
-		DestDir: "/global/dest",
+		DestDir: globalDest,
 		Archive: archiveConfig{
-			DestDir: "/archive/dest",
+			DestDir: archiveDest,
 		},
 		Thumbnail: thumbnailConfig{
-			DestDir: "/thumb/dest",
+			DestDir: thumbDest,
 		},
 	}
 	opts2, err := resolveOptions(cmd, cfg2)
 	if err != nil {
 		t.Fatalf("resolveOptions failed: %v", err)
 	}
-	if opts2.Archive.DestDir != "/archive/dest" {
-		t.Errorf("opts2.Archive.DestDir = %q, want %q", opts2.Archive.DestDir, "/archive/dest")
+	if opts2.Archive.DestDir != archiveDest {
+		t.Errorf("opts2.Archive.DestDir = %q, want %q", opts2.Archive.DestDir, archiveDest)
 	}
-	if opts2.Thumbnail.DestDir != "/thumb/dest" {
-		t.Errorf("opts2.Thumbnail.DestDir = %q, want %q", opts2.Thumbnail.DestDir, "/thumb/dest")
+	if opts2.Thumbnail.DestDir != thumbDest {
+		t.Errorf("opts2.Thumbnail.DestDir = %q, want %q", opts2.Thumbnail.DestDir, thumbDest)
 	}
 }

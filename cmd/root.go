@@ -92,6 +92,7 @@ func newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newThumbnailCmd())
 	cmd.AddCommand(newWatchCmd())
+	cmd.AddCommand(newRetryCmd())
 	cmd.AddCommand(newInstallServiceCmd())
 
 	return cmd
@@ -152,11 +153,17 @@ func run(cmd *cobra.Command, sourceDir string) error {
 	if err != nil {
 		return err
 	}
+	if err := retryPendingJobs(opts, true); err != nil {
+		stepLog("WARN: 启动恢复仍有未完成任务: %v", err)
+	}
 
 	return processSource(sourceDir, opts)
 }
 
 func processSource(sourcePath string, opts runOptions) error {
+	if opts.Upload.Enabled {
+		return processSourceWithUpload(sourcePath, opts)
+	}
 	stepLog("解析源路径: %s", sourcePath)
 	input, err := prepareArchiveInput(sourcePath, opts.MinSizeMB*mb)
 	if err != nil {
@@ -597,6 +604,7 @@ type appConfig struct {
 	Archive         archiveConfig   `json:"archive" yaml:"archive"`
 	Thumbnail       thumbnailConfig `json:"thumbnail" yaml:"thumbnail"`
 	Report          reportConfig    `json:"report" yaml:"report"`
+	Upload          uploadConfig    `json:"upload" yaml:"upload"`
 	Watch           watchConfig     `json:"watch" yaml:"watch"`
 	Log             logConfig       `json:"log" yaml:"log"`
 }
@@ -631,6 +639,7 @@ type runOptions struct {
 	Archive         archiveOptions
 	Thumbnail       thumbnailOptions
 	Report          reportOptions
+	Upload          uploadOptions
 	DryRun          bool
 }
 
@@ -802,6 +811,10 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 	if err != nil {
 		return runOptions{}, err
 	}
+	upload, err := resolveUploadOptions(cfg.Upload, absArchiveDest)
+	if err != nil {
+		return runOptions{}, err
+	}
 
 	return runOptions{
 		DestDir:         dest,
@@ -812,6 +825,7 @@ func resolveOptions(cmd *cobra.Command, cfg appConfig) (runOptions, error) {
 		Archive:         archive,
 		Thumbnail:       thumb,
 		Report:          report,
+		Upload:          upload,
 		DryRun:          dryRun,
 	}, nil
 }

@@ -9,6 +9,7 @@
 # Logs and runtime files
 *.log
 logs/
+.qbit-upload-jobs/
 
 # Archives
 *.7z

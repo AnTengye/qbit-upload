@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,8 +64,10 @@ type reportPreview struct {
 }
 
 type reportPayload struct {
-	Code    string
-	Preview *reportPreview
+	Code           string
+	Preview        *reportPreview
+	Status         *int
+	IdempotencyKey string
 }
 
 type reportOutcome int
@@ -218,7 +222,7 @@ func (t *filmReportTracker) Complete(files []string) []filmReportPlan {
 func newFilmReporter(opts reportOptions) *filmReporter {
 	return &filmReporter{
 		opts:   opts,
-		client: &http.Client{Timeout: opts.Timeout},
+		client: &http.Client{Timeout: opts.Timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		seen:   make(map[string]struct{}),
 		slots:  make(chan struct{}, maxConcurrentReports),
 	}
@@ -301,36 +305,58 @@ func (r *filmReporter) Wait() {
 }
 
 func (r *filmReporter) send(ctx context.Context, payload reportPayload) (reportOutcome, error) {
+	if payload.Status != nil && (*payload.Status < 1 || *payload.Status > 5) {
+		return reportCreated, &reportHTTPError{StatusCode: http.StatusBadRequest, Body: "status 必须是 1–5"}
+	}
 	var body bytes.Buffer
-	writer := multipart.NewWriter(&body)
-	if err := writer.WriteField("code", payload.Code); err != nil {
-		return reportCreated, fmt.Errorf("写入上报番号失败: %w", err)
-	}
-	if payload.Preview != nil {
-		header := make(textproto.MIMEHeader)
-		header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{
-			"name":     "previewFile",
-			"filename": payload.Preview.Name,
-		}))
-		header.Set("Content-Type", payload.Preview.ContentType)
-		part, err := writer.CreatePart(header)
-		if err != nil {
-			return reportCreated, fmt.Errorf("创建预览图表单失败: %w", err)
+	contentType := "application/json"
+	if payload.Preview == nil {
+		if err := json.NewEncoder(&body).Encode(struct {
+			Code   string `json:"code"`
+			Status *int   `json:"status,omitempty"`
+		}{payload.Code, payload.Status}); err != nil {
+			return reportCreated, err
 		}
-		if _, err := part.Write(payload.Preview.Data); err != nil {
-			return reportCreated, fmt.Errorf("写入预览图表单失败: %w", err)
+	} else {
+		writer := multipart.NewWriter(&body)
+		if err := writer.WriteField("code", payload.Code); err != nil {
+			return reportCreated, fmt.Errorf("写入上报番号失败: %w", err)
 		}
-	}
-	if err := writer.Close(); err != nil {
-		return reportCreated, fmt.Errorf("结束上报表单失败: %w", err)
+		if payload.Status != nil {
+			if err := writer.WriteField("status", strconv.Itoa(*payload.Status)); err != nil {
+				return reportCreated, err
+			}
+		}
+		if payload.Preview != nil {
+			header := make(textproto.MIMEHeader)
+			header.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{
+				"name":     "previewFile",
+				"filename": payload.Preview.Name,
+			}))
+			header.Set("Content-Type", payload.Preview.ContentType)
+			part, err := writer.CreatePart(header)
+			if err != nil {
+				return reportCreated, fmt.Errorf("创建预览图表单失败: %w", err)
+			}
+			if _, err := part.Write(payload.Preview.Data); err != nil {
+				return reportCreated, fmt.Errorf("写入预览图表单失败: %w", err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			return reportCreated, fmt.Errorf("结束上报表单失败: %w", err)
+		}
+		contentType = writer.FormDataContentType()
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.opts.URL, bytes.NewReader(body.Bytes()))
 	if err != nil {
 		return reportCreated, fmt.Errorf("创建上报请求失败: %w", err)
 	}
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("Key", r.opts.APIKey)
+	if payload.IdempotencyKey != "" {
+		req.Header.Set("Idempotency-Key", payload.IdempotencyKey)
+	}
 
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -340,9 +366,14 @@ func (r *filmReporter) send(ctx context.Context, payload reportPayload) (reportO
 	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxReportResponseBytes))
 
 	switch resp.StatusCode {
-	case http.StatusCreated:
+	case http.StatusOK, http.StatusCreated, http.StatusNoContent:
 		return reportCreated, nil
 	case http.StatusConflict:
+		// Existing catalog numbers do not prove that their status is now 5.
+		// Preserve the archive unless this request was explicitly accepted.
+		if payload.Status != nil && *payload.Status == 5 {
+			return reportCreated, &reportHTTPError{StatusCode: resp.StatusCode, Body: "影片已存在，但未确认状态更新为已归档"}
+		}
 		return reportAlreadyExists, nil
 	default:
 		return reportCreated, &reportHTTPError{
