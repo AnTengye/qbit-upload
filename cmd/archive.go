@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -105,18 +106,16 @@ func isExecutableFile(path string) bool {
 	return info.Mode()&0o111 != 0
 }
 
-func createTgzArchive(sourceDir, outArchive string, files []string) error {
+func createTgzArchive(sourceDir, outArchive string, files []string) (retErr error) {
 	out, err := os.Create(outArchive)
 	if err != nil {
 		return fmt.Errorf("创建 tgz 文件失败: %w", err)
 	}
-	defer out.Close()
 
 	gz := gzip.NewWriter(out)
-	defer gz.Close()
 
 	tw := tar.NewWriter(gz)
-	defer tw.Close()
+	defer func() { retErr = errors.Join(retErr, tw.Close(), gz.Close(), out.Sync(), out.Close()) }()
 
 	for _, rel := range files {
 		cleanRel := filepath.Clean(rel)
@@ -225,7 +224,13 @@ func compressWith7z(sourceDir, outArchive string, files []string, sevenZipPath, 
 	cmd.Stdout = mw
 	cmd.Stderr = mw
 
-	stepLog("执行命令: %s %s", sevenZipPath, strings.Join(args, " "))
+	loggedArgs := append([]string(nil), args...)
+	for i, arg := range loggedArgs {
+		if strings.HasPrefix(arg, "-p") {
+			loggedArgs[i] = "-p[REDACTED]"
+		}
+	}
+	stepLog("执行命令: %s %s", sevenZipPath, strings.Join(loggedArgs, " "))
 	err := cmd.Start()
 	if err != nil {
 		return fmt.Errorf("启动 7z 失败: %w", err)

@@ -4,6 +4,8 @@
 
 ## Features
 
+UGREEN NAS users can enable [native Baidu upload with durable retries](docs/native-baidu-upload.md): move the archive first, wait for upload completion, report `status=5`, then delete the local archive only after reporting succeeds. Failures resume at startup or after 12 hours.
+
 - Filter video files by extension + MIME detection.
 - Ignore files smaller than a configurable minimum size.
 - Encrypt archive content and file list with 7z password mode (`-p` + `-mhe=on`).

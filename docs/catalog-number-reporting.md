@@ -2,6 +2,8 @@
 
 本文档描述 `qbit-upload` 内置的番号预处理规则，以及影片打包完成后的 Avister Film 异步上报行为。
 
+以下尽力上报行为适用于未启用原生上传的旧模式。设置 `upload.enabled: true` 后，改为上传完成再以 `status=5` 上报、成功确认后清理本地文件，详见 [原生上传与持久化重试](native-baidu-upload.md)。客户端有预览图时使用 multipart，没有图片时使用 JSON；未指定状态由服务端默认使用 1。
+
 ## 设计目标
 
 - 从带域名、发布组、画质、字幕、时间戳和分段信息的文件名中提取稳定番号。
@@ -92,7 +94,7 @@
 POST http://89.116.88.182:8081/api/external/films
 ```
 
-请求使用 `multipart/form-data`：
+有预览图时请求使用 `multipart/form-data`：
 
 - `code`：预处理后的核心番号。
 - `previewFile`：该影片生成的 JPEG 缩略图长图。

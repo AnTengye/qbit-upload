@@ -45,3 +45,18 @@ report:
 log:
   path: logs
   also_stdout: true
+
+# Move -> native upload -> report status=5 -> delete local archive.
+# Enable on the NAS; see docs/native-baidu-upload.md for credentials and TLS.
+upload:
+  enabled: false
+  base_url: https://127.0.0.1:9443
+  username: ""
+  certificate_sha256: ""
+  remote_dir: /绿联网盘
+  state_dir: ""
+  task_db: /volume1/@appstore/com.ugreen.netdisk/db/net_disk.db
+  sqlite: sqlite3
+  timeout: 24h
+  poll_interval: 5s
+  retry_interval: 12h

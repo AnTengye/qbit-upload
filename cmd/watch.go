@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -53,8 +56,14 @@ func runWatch(cmd *cobra.Command) error {
 		stepLog("监听目录: %s", abs)
 	}
 
-	processed := make(map[string]struct{})
+	processed := make(map[string]string)
+	if err := retryPendingJobs(opts, true); err != nil {
+		stepLog("WARN: 启动恢复仍有未完成任务: %v", err)
+	}
 	for {
+		if err := retryPendingJobs(opts, false); err != nil {
+			stepLog("WARN: 到期重试仍有未完成任务: %v", err)
+		}
 		for _, dir := range absDirs {
 			candidates, err := scanWatchCandidates(dir, opts.MinSizeMB*mb)
 			if err != nil {
@@ -67,22 +76,72 @@ func runWatch(cmd *cobra.Command) error {
 					stepLog("WARN: 解析监听目标失败 %s: %v", candidate, err)
 					continue
 				}
-				if _, ok := processed[target]; ok {
+				signature := ""
+				if opts.Upload.Enabled {
+					signature, err = watchTargetSignature(target, opts.MinSizeMB*mb)
+					if err != nil {
+						continue
+					}
+				}
+				if old, ok := processed[target]; ok && old == signature {
 					continue
 				}
-				if !isStableFile(candidate, watchOpts.StableDelay) {
+				if opts.Upload.Enabled {
+					time.Sleep(watchOpts.StableDelay)
+					confirmed, err := watchTargetSignature(target, opts.MinSizeMB*mb)
+					if err != nil || signature != confirmed {
+						continue
+					}
+				} else if !isStableFile(candidate, watchOpts.StableDelay) {
 					continue
 				}
 				stepLog("发现稳定视频，开始处理: %s", target)
 				if err := processSource(target, opts); err != nil {
+					if errors.Is(err, errJobWaiting) {
+						continue
+					}
 					stepLog("ERROR: 自动处理失败 %s: %v", target, err)
 					continue
 				}
-				processed[target] = struct{}{}
+				processed[target] = signature
 			}
 		}
 		time.Sleep(watchOpts.PollInterval)
 	}
+}
+
+// Compare the whole batch, since checking just its first video can package a
+// different video that is still being copied into the same directory.
+func watchTargetSignature(target string, minSizeBytes int64) (string, error) {
+	hash := sha256.New()
+	err := filepath.WalkDir(target, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || info.Size() < minSizeBytes {
+			return nil
+		}
+		video, err := isVideo(path)
+		if err != nil {
+			return err
+		}
+		if !video {
+			return nil
+		}
+		fmt.Fprintf(hash, "%s\x00%d\x00%d\x00", path, info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func scanWatchCandidates(watchDir string, minSizeBytes int64) ([]string, error) {
