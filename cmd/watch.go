@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -56,11 +57,21 @@ func runWatch(cmd *cobra.Command) error {
 		stepLog("监听目录: %s", abs)
 	}
 
+	ctx := cmd.Context()
+	stopFilter, err := startWatchTorrentFilter(ctx, cfg.TorrentFilter, logFilePath, dryRun)
+	if err != nil {
+		return fmt.Errorf("启动种子过滤失败: %w", err)
+	}
+	defer stopFilter()
+
 	processed := make(map[string]string)
 	if err := retryPendingJobs(opts, true); err != nil {
 		stepLog("WARN: 启动恢复仍有未完成任务: %v", err)
 	}
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err := retryPendingJobs(opts, false); err != nil {
 			stepLog("WARN: 到期重试仍有未完成任务: %v", err)
 		}
@@ -71,6 +82,9 @@ func runWatch(cmd *cobra.Command) error {
 				continue
 			}
 			for _, candidate := range candidates {
+				if ctx.Err() != nil {
+					return nil
+				}
 				target, err := watchedProcessingPath(dir, candidate)
 				if err != nil {
 					stepLog("WARN: 解析监听目标失败 %s: %v", candidate, err)
@@ -87,12 +101,14 @@ func runWatch(cmd *cobra.Command) error {
 					continue
 				}
 				if opts.Upload.Enabled {
-					time.Sleep(watchOpts.StableDelay)
+					if !waitWatchContext(ctx, watchOpts.StableDelay) {
+						return nil
+					}
 					confirmed, err := watchTargetSignature(target, opts.MinSizeMB*mb)
 					if err != nil || signature != confirmed {
 						continue
 					}
-				} else if !isStableFile(candidate, watchOpts.StableDelay) {
+				} else if !isStableFile(ctx, candidate, watchOpts.StableDelay) {
 					continue
 				}
 				stepLog("发现稳定视频，开始处理: %s", target)
@@ -106,7 +122,20 @@ func runWatch(cmd *cobra.Command) error {
 				processed[target] = signature
 			}
 		}
-		time.Sleep(watchOpts.PollInterval)
+		if !waitWatchContext(ctx, watchOpts.PollInterval) {
+			return nil
+		}
+	}
+}
+
+func waitWatchContext(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return ctx.Err() == nil
 	}
 }
 
@@ -205,12 +234,14 @@ func splitPathParts(path string) []string {
 	return strings.Split(clean, string(os.PathSeparator))
 }
 
-func isStableFile(path string, delay time.Duration) bool {
+func isStableFile(ctx context.Context, path string, delay time.Duration) bool {
 	first, err := os.Stat(path)
 	if err != nil || first.IsDir() {
 		return false
 	}
-	time.Sleep(delay)
+	if !waitWatchContext(ctx, delay) {
+		return false
+	}
 	second, err := os.Stat(path)
 	if err != nil || second.IsDir() {
 		return false

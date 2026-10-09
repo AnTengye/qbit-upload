@@ -39,6 +39,8 @@ var (
 	config           string
 	serviceName      string
 	serviceUser      string
+	serviceMode      string
+	serviceEnvFile   string
 	deleteSource     bool
 	archiveDestDir   string
 	thumbnailDestDir string
@@ -80,7 +82,7 @@ func newRootCmd() *cobra.Command {
 	flags.IntVar(&thumbnailColumns, "thumbnail-columns", 4, "缩略图列数")
 	flags.IntVar(&thumbnailRows, "thumbnail-rows", 15, "缩略图行数")
 	flags.IntVar(&thumbnailWidth, "thumbnail-width", 320, "单张缩略图宽度")
-	flags.BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除")
+	flags.BoolVar(&dryRun, "dry-run", false, "仅打印将执行的操作，不实际压缩/移动/删除或修改 qBittorrent")
 	flags.StringVar(&config, "config", "", "配置文件路径（支持 .yaml/.yml/.json）")
 	flags.BoolVar(&deleteSource, "delete-source", true, "压缩完成后是否删除源文件")
 	flags.StringVar(&archiveDestDir, "archive-dest", "", "压缩包专属输出目录（可选，默认使用 -d/--dest）")
@@ -92,6 +94,7 @@ func newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(newThumbnailCmd())
 	cmd.AddCommand(newWatchCmd())
+	cmd.AddCommand(newFilterTorrentsCmd())
 	cmd.AddCommand(newRetryCmd())
 	cmd.AddCommand(newInstallServiceCmd())
 
@@ -112,7 +115,7 @@ func newThumbnailCmd() *cobra.Command {
 func newWatchCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "watch",
-		Short: "监听配置中的目录，发现复制完成的大视频后自动处理",
+		Short: "监听目录并自动处理大视频，同时运行配置中启用的种子过滤",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runWatch(cmd)
@@ -126,11 +129,13 @@ func newInstallServiceCmd() *cobra.Command {
 		Short: "安装 Linux systemd 服务并默认以监听模式自启动",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runInstallService()
+			return runInstallService(cmd)
 		},
 	}
 	cmd.Flags().StringVar(&serviceName, "name", "qbit-upload", "systemd 服务名称")
 	cmd.Flags().StringVar(&serviceUser, "user", "", "运行服务的 Linux 用户（可选）")
+	cmd.Flags().StringVar(&serviceMode, "mode", "watch", "服务运行模式：watch（含配置启用的种子过滤）或 filter-torrents")
+	cmd.Flags().StringVar(&serviceEnvFile, "env-file", "", "systemd 环境变量文件（可用于 qBittorrent 凭据）")
 	return cmd
 }
 
@@ -596,17 +601,18 @@ func prepareVideoInputs(sourceDir string, opts runOptions) (absSource, absDest s
 }
 
 type appConfig struct {
-	DestDir         string          `json:"dest_dir" yaml:"dest_dir"`
-	Password        string          `json:"password" yaml:"password"`
-	SevenZip        string          `json:"seven_zip" yaml:"seven_zip"`
-	MinSizeMB       int64           `json:"min_size_mb" yaml:"min_size_mb"`
-	ReserveMemoryMB int64           `json:"reserve_memory_mb" yaml:"reserve_memory_mb"`
-	Archive         archiveConfig   `json:"archive" yaml:"archive"`
-	Thumbnail       thumbnailConfig `json:"thumbnail" yaml:"thumbnail"`
-	Report          reportConfig    `json:"report" yaml:"report"`
-	Upload          uploadConfig    `json:"upload" yaml:"upload"`
-	Watch           watchConfig     `json:"watch" yaml:"watch"`
-	Log             logConfig       `json:"log" yaml:"log"`
+	DestDir         string              `json:"dest_dir" yaml:"dest_dir"`
+	Password        string              `json:"password" yaml:"password"`
+	SevenZip        string              `json:"seven_zip" yaml:"seven_zip"`
+	MinSizeMB       int64               `json:"min_size_mb" yaml:"min_size_mb"`
+	ReserveMemoryMB int64               `json:"reserve_memory_mb" yaml:"reserve_memory_mb"`
+	Archive         archiveConfig       `json:"archive" yaml:"archive"`
+	Thumbnail       thumbnailConfig     `json:"thumbnail" yaml:"thumbnail"`
+	Report          reportConfig        `json:"report" yaml:"report"`
+	Upload          uploadConfig        `json:"upload" yaml:"upload"`
+	Watch           watchConfig         `json:"watch" yaml:"watch"`
+	Log             logConfig           `json:"log" yaml:"log"`
+	TorrentFilter   torrentFilterConfig `json:"torrent_filter" yaml:"torrent_filter"`
 }
 
 type archiveConfig struct {

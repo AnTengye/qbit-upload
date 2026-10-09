@@ -13,7 +13,8 @@ UGREEN NAS users can enable [native Baidu upload with durable retries](docs/nati
 - Configurable archive temp directory.
 - Watch mode for automatically processing completed large video copies.
 - Linux amd64/arm64 can use an embedded official `7zz`/`7z` under `tools/<goos>-<goarch>/`.
-- Linux systemd service installer for watch-mode autostart.
+- One Linux systemd service for watching files and configured qBittorrent filtering.
+- [Background qBittorrent file-size filtering](docs/qbittorrent-size-filter.md) with priority readback and restart recovery, running concurrently with packaging/upload.
 - Fall back to an unencrypted `.tgz` archive when 7z is unavailable or fails.
 - Generate ffmpeg thumbnail contact sheets for matched videos.
 - Normalize movie catalog numbers and asynchronously report each completed film with its preview image.
@@ -148,6 +149,8 @@ qbit-upload watch --config /etc/qbit-upload.yaml
 ```
 
 Use `--name` to change the service name and `--user` to run as a specific Linux user.
+
+Set `torrent_filter.enabled: true` in the same configuration to run download filtering inside this service. It uses the same process and logs, while its own polling loop continues during packaging and uploads. Filtering is disabled by default for existing configurations. See [qBittorrent size filtering](docs/qbittorrent-size-filter.md) for setup and migration from a separate filter service.
 
 ### Thumbnails
 

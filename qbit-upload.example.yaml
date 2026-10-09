@@ -24,6 +24,25 @@ watch:
   stable_delay: 30s
   poll_interval: 5s
 
+# Background download filtering runs alongside packaging/upload in `qbit-upload watch`.
+# Only tagged tasks are managed. This threshold is independent of min_size_mb above.
+torrent_filter:
+  # Set true to include filtering in the existing qbit-upload service.
+  enabled: false
+  base_url: http://127.0.0.1:8080
+  username: ""
+  # Prefer QBIT_UPLOAD_QBITTORRENT_PASSWORD instead of storing the password here.
+  # password: ""
+  # MiB (1024 * 1024 bytes). Smaller files are skipped; equal-sized files are kept.
+  min_size_mb: 100
+  tag: filter-small
+  poll_interval: 5s
+  retry_interval: 30s
+  request_timeout: 10s
+  # Optional. Defaults to the current user's config directory/qbit-upload/torrent-filter.
+  # On the NAS, use an absolute path such as /var/lib/qbit-upload/torrent-filter.
+  state_dir: ""
+
 thumbnail:
   enabled: true
   ffmpeg: ffmpeg

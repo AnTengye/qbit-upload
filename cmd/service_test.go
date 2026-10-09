@@ -23,3 +23,19 @@ func TestBuildSystemdUnitDefaultsToWatchMode(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildSystemdUnitForTorrentFilter(t *testing.T) {
+	unit := buildSystemdUnit(systemdUnitOptions{
+		BinaryPath: "/usr/local/bin/qbit-upload", ConfigPath: "/etc/qbit-upload.yaml",
+		Mode: "filter-torrents", EnvironmentFile: "/etc/qbit-upload-qbittorrent.env",
+	})
+	for _, want := range []string{
+		"ExecStart=/usr/local/bin/qbit-upload filter-torrents --config /etc/qbit-upload.yaml",
+		"EnvironmentFile=/etc/qbit-upload-qbittorrent.env",
+		"Restart=on-failure",
+	} {
+		if !strings.Contains(unit, want) {
+			t.Fatalf("filter service missing %q:\n%s", want, unit)
+		}
+	}
+}
