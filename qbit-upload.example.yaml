@@ -43,6 +43,44 @@ torrent_filter:
   # On the NAS, use an absolute path such as /var/lib/qbit-upload/torrent-filter.
   state_dir: ""
 
+# Automatic stalled-download rescue. Uses torrent_filter's WebUI connection and
+# credentials, with its own tag/worker; candidates never use filter-small.
+# See docs/torrent-rescue.md before enabling the completion hook.
+# After verified publication, other unfinished group members and their data are
+# deleted; the group's persisted candidate records retain only the winner.
+torrent_rescue:
+  enabled: false
+  rss_url: https://sukebei.nyaa.si/
+  proxy_url: "" # HTTP/SOCKS proxy for search only; or QBIT_UPLOAD_SEARCH_PROXY.
+  poll_interval: 15m
+  min_age: 240h
+  search_interval: 24h
+  search_timeout: 30s
+  metadata_timeout: 1h
+  poor_score_after: 6h
+  min_runtime_score: 40
+  trial_timeout: 24h
+  cooldown: 168h
+  max_per_code: 3
+  max_active: 6
+  max_candidates: 10
+  search_batch: 2
+  storage_budget_gb: 200 # GiB, including retained failed/winner candidate files.
+  min_free_gb: 20
+  min_video_size_mb: 100
+  preferred_video_size_gb: 4 # GiB of the verified film, not torrent total size.
+  ideal_video_size_gb: 20 # Prefer films within +/-20%; smaller copies are fallback.
+  min_video_duration: 1m
+  min_video_height: 720
+  category: qbit-rescue
+  state_dir: "" # NAS example: /var/lib/qbit-upload/torrent-rescue
+  guard_dir: "" # Host directory mounted as /config/qbit-rescue/guards.
+  hook_path: /config/qbit-rescue-hook.py
+  download_path_prefix: /downloads
+  download_host_dir: "" # Host side of the /downloads container mount.
+  candidate_save_path: /downloads/qbit-rescue
+  publish_dir: "" # A dedicated existing watch.dirs entry (not its parent).
+
 thumbnail:
   enabled: true
   ffmpeg: ffmpeg

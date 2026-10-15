@@ -19,6 +19,8 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+__pycache__/
+*.pyc
 
 # Local config
 qbit-upload.yaml

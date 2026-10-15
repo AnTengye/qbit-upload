@@ -63,6 +63,11 @@ func runWatch(cmd *cobra.Command) error {
 		return fmt.Errorf("启动种子过滤失败: %w", err)
 	}
 	defer stopFilter()
+	stopRescue, err := startWatchTorrentRescue(ctx, cfg, dryRun)
+	if err != nil {
+		return fmt.Errorf("启动种子补救失败: %w", err)
+	}
+	defer stopRescue()
 
 	processed := make(map[string]string)
 	if err := retryPendingJobs(opts, true); err != nil {
@@ -88,6 +93,13 @@ func runWatch(cmd *cobra.Command) error {
 				target, err := watchedProcessingPath(dir, candidate)
 				if err != nil {
 					stepLog("WARN: 解析监听目标失败 %s: %v", candidate, err)
+					continue
+				}
+				ready, err := rescuePublicationReady(target, cfg.TorrentRescue)
+				if err != nil {
+					stepLog("WARN: 核验补救交付失败: %v", err)
+				}
+				if !ready || err != nil {
 					continue
 				}
 				signature := ""

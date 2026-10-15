@@ -95,6 +95,8 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newThumbnailCmd())
 	cmd.AddCommand(newWatchCmd())
 	cmd.AddCommand(newFilterTorrentsCmd())
+	cmd.AddCommand(newRescueTorrentsCmd())
+	cmd.AddCommand(newSearchTorrentsCmd())
 	cmd.AddCommand(newRetryCmd())
 	cmd.AddCommand(newInstallServiceCmd())
 
@@ -613,6 +615,7 @@ type appConfig struct {
 	Watch           watchConfig         `json:"watch" yaml:"watch"`
 	Log             logConfig           `json:"log" yaml:"log"`
 	TorrentFilter   torrentFilterConfig `json:"torrent_filter" yaml:"torrent_filter"`
+	TorrentRescue   torrentRescueConfig `json:"torrent_rescue" yaml:"torrent_rescue"`
 }
 
 type archiveConfig struct {

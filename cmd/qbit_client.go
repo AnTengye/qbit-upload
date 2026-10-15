@@ -16,17 +16,29 @@ import (
 )
 
 type qbitTorrent struct {
-	Hash    string `json:"hash"`
-	Tags    string `json:"tags"`
-	State   string `json:"state"`
-	AddedOn int64  `json:"added_on"`
+	Hash         string  `json:"hash"`
+	Tags         string  `json:"tags"`
+	State        string  `json:"state"`
+	AddedOn      int64   `json:"added_on"`
+	Name         string  `json:"name"`
+	Progress     float64 `json:"progress"`
+	Completed    int64   `json:"completed"`
+	Size         int64   `json:"size"`
+	AmountLeft   int64   `json:"amount_left"`
+	DLSpeed      int64   `json:"dlspeed"`
+	Seeds        int     `json:"num_seeds"`
+	Availability float64 `json:"availability"`
+	SavePath     string  `json:"save_path"`
+	Category     string  `json:"category"`
 }
 
 type qbitFile struct {
-	Index    int    `json:"index"`
-	Name     string `json:"name"`
-	Size     int64  `json:"size"`
-	Priority int    `json:"priority"`
+	Index        int     `json:"index"`
+	Name         string  `json:"name"`
+	Size         int64   `json:"size"`
+	Priority     int     `json:"priority"`
+	Progress     float64 `json:"progress"`
+	Availability float64 `json:"availability"`
 }
 
 type qbitAPIError struct {
@@ -197,10 +209,12 @@ func (c *qbitClient) torrent(ctx context.Context, hash string) (qbitTorrent, err
 
 func (c *qbitClient) files(ctx context.Context, hash string) ([]qbitFile, error) {
 	var wire []struct {
-		Index    *int   `json:"index"`
-		Name     string `json:"name"`
-		Size     *int64 `json:"size"`
-		Priority *int   `json:"priority"`
+		Index        *int    `json:"index"`
+		Name         string  `json:"name"`
+		Size         *int64  `json:"size"`
+		Priority     *int    `json:"priority"`
+		Progress     float64 `json:"progress"`
+		Availability float64 `json:"availability"`
 	}
 	if err := c.getArray(ctx, "torrents/files", url.Values{"hash": {hash}}, &wire); err != nil {
 		return nil, err
@@ -213,7 +227,7 @@ func (c *qbitClient) files(ctx context.Context, hash string) ([]qbitFile, error)
 			return nil, fmt.Errorf("qBittorrent 文件列表字段不完整或索引重复")
 		}
 		indexes[*f.Index] = true
-		files = append(files, qbitFile{Index: *f.Index, Name: f.Name, Size: *f.Size, Priority: *f.Priority})
+		files = append(files, qbitFile{Index: *f.Index, Name: f.Name, Size: *f.Size, Priority: *f.Priority, Progress: f.Progress, Availability: f.Availability})
 	}
 	return files, nil
 }
@@ -241,6 +255,16 @@ func (c *qbitClient) setRunning(ctx context.Context, hash string, running bool) 
 		}
 	}
 	_, _, err := c.request(ctx, "torrents/"+action, url.Values{"hashes": {hash}}, true)
+	return err
+}
+
+func (c *qbitClient) deleteTorrent(ctx context.Context, hash string, deleteFiles bool) error {
+	if !validTorrentHash(hash) {
+		return fmt.Errorf("删除任务需要单个有效 infohash")
+	}
+	_, _, err := c.request(ctx, "torrents/delete", url.Values{
+		"hashes": {hash}, "deleteFiles": {strconv.FormatBool(deleteFiles)},
+	}, true)
 	return err
 }
 

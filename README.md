@@ -152,6 +152,8 @@ Use `--name` to change the service name and `--user` to run as a specific Linux 
 
 Set `torrent_filter.enabled: true` in the same configuration to run download filtering inside this service. It uses the same process and logs, while its own polling loop continues during packaging and uploads. Filtering is disabled by default for existing configurations. See [qBittorrent size filtering](docs/qbittorrent-size-filter.md) for setup and migration from a separate filter service.
 
+Set `torrent_rescue.enabled: true` after installing its completion hook to observe stalled downloads, search Sukebei RSS through a separate proxy, and run bounded alternative downloads. After a verified publication, it deletes other unfinished managed downloads and their partial data, then retains only the winner's candidate record. Cleanup resumes after interruptions and also applies to previously published groups. It is disabled by default. See [torrent rescue](docs/torrent-rescue.md) for paths, limits, verification, and the `search-torrents` / `rescue-torrents` commands.
+
 ### Thumbnails
 
 Thumbnails are enabled by default. For each matched video, the CLI writes a JPEG contact sheet next to the archive in the destination directory. The default layout is `4` columns by `15` rows. Frames are sampled by seeking to evenly spaced points in the video, similar to media player thumbnail generation, instead of scanning the full stream with an fps filter.
